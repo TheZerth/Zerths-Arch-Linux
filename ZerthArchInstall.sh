@@ -89,6 +89,77 @@ configureNvidiaInitramfs() {
 	sudo mkinitcpio -P
 }
 
+setNvidiaPersistenceMode() {
+	echo "Set NVIDIA persistence mode"
+	if ! command -v nvidia-smi >/dev/null 2>&1; then
+		echo "nvidia-smi not found; skipping NVIDIA persistence mode."
+		return
+	fi
+
+	timeout 10s sudo nvidia-smi -pm 1 || echo "Skipping NVIDIA persistence mode; the driver may need a reboot."
+}
+
+setNvidiaPowerMizerMode() {
+	echo "Set NVIDIA PowerMizer max performance mode"
+	if ! command -v nvidia-settings >/dev/null 2>&1; then
+		echo "nvidia-settings not found; skipping NVIDIA PowerMizer mode."
+		return
+	fi
+
+	timeout 10s nvidia-settings -a "[gpu:0]/GpuPowerMizerMode=1" || echo "Skipping NVIDIA PowerMizer mode; NVIDIA control display is unavailable."
+}
+
+setNvidiaPowerMizerModeInHyprland() {
+	echo "Set NVIDIA PowerMizer max performance mode in Hyprland"
+	if ! command -v nvidia-settings >/dev/null 2>&1; then
+		echo "nvidia-settings not found; skipping NVIDIA PowerMizer mode."
+		return
+	fi
+
+	if runAsInstallUser hyprctl --instance 0 dispatch exec "sh -lc 'timeout 10s nvidia-settings -a \"[gpu:0]/GpuPowerMizerMode=1\"'" >/dev/null 2>&1; then
+		sleep 2
+	else
+		echo "Hyprland control socket unavailable; skipping NVIDIA PowerMizer mode."
+	fi
+}
+
+copySshKeysFromUsb() {
+	local usb_device="/dev/sda1"
+	local mount_point="/tmp/zerth-ssh-usb"
+	local source_ssh="$mount_point/.ssh"
+	local target_ssh="$InstallHome/.ssh"
+
+	echo -e "${Title}Copying SSH Keys${END}"
+	read -r -p "Please plug in the USB device containing .ssh on /dev/sda1, then press Enter to continue."
+
+	sudo mkdir -p "$mount_point"
+	if ! sudo mount "$usb_device" "$mount_point"; then
+		echo "Could not mount $usb_device; skipping SSH key copy."
+		sudo rmdir "$mount_point"
+		return
+	fi
+
+	if [ -d "$source_ssh" ]; then
+		sudo mkdir -p "$target_ssh"
+		if sudo cp -a "$source_ssh/." "$target_ssh/"; then
+			sudo chmod 700 "$target_ssh"
+			sudo find "$target_ssh" -type d -exec chmod 700 {} +
+			sudo find "$target_ssh" -type f -exec chmod 600 {} +
+			if [ "$InstallUser" != "root" ]; then
+				sudo chown -R "$InstallUser:$InstallGroup" "$target_ssh"
+			fi
+			echo "SSH keys copied to $target_ssh."
+		else
+			echo "Failed to copy SSH keys to $target_ssh."
+		fi
+	else
+		echo "No .ssh folder found at the root of $usb_device; skipping SSH key copy."
+	fi
+
+	sudo umount "$mount_point"
+	sudo rmdir "$mount_point"
+}
+
 ensureHyprLine() {
 	local line="$1"
 	local config="$2"
@@ -295,10 +366,14 @@ handleInstall monique
 echo "Start Hyprland once to generate configs"
 if [ -n "$WAYLAND_DISPLAY" ] || [ -n "$DISPLAY" ]; then
 	echo "Skipping Hyprland first-run because a graphical session is already active."
+	setNvidiaPersistenceMode
+	setNvidiaPowerMizerMode
 elif [ "$InstallUser" = "root" ]; then
 	echo "Skipping Hyprland first-run because no non-root install user was detected."
+	setNvidiaPersistenceMode
 elif ! command -v start-hyprland >/dev/null 2>&1; then
 	echo "start-hyprland not found; skipping Hyprland first-run."
+	setNvidiaPersistenceMode
 else
 	HyprlandLog="$InstallHome/.cache/zerth-hyprland-first-run.log"
 	mkdir -p "$InstallHome/.cache"
@@ -308,6 +383,9 @@ else
 	runAsInstallUser start-hyprland -- > "$HyprlandLog" 2>&1 &
 	HyprlandPid=$!
 	sleep 10
+
+	setNvidiaPersistenceMode
+	setNvidiaPowerMizerModeInHyprland
 
 	if runAsInstallUser hyprctl --instance 0 dispatch exec hyprshutdown >/dev/null 2>&1; then
 		waitForHyprlandExit "$HyprlandPid"
@@ -337,9 +415,6 @@ handleInstall btop
 echo -e "${Title}Configuring Arch${END}"
 echo "Enable SSD TRIM"
 sudo systemctl enable fstrim.timer
-echo "Set GPU MAX Power Mode"
-sudo nvidia-smi -pm 1
-nvidia-settings -a "[gpu:0]/GpuPowerMizerMode=1"
 echo "Enable TuneD"
 sudo systemctl enable tuned.service
 sudo systemctl start tuned.service
@@ -390,11 +465,7 @@ if [ -f "$ProggyFont" ]; then
 else
 	echo "ProggyClean.ttf not found at $ProggyFont; skipping Foot font configuration."
 fi
-echo -e "${Title}Copying SSH Keys${END}"
-cd
-mkdir USB
-mount /dev/sda1 ./USB
-cp -r ./USB/.ssh/* ~/.ssh/
-umount /dev/sda1
+copySshKeysFromUsb
 
+read -r -p "Installation complete. Press Enter to reboot."
 sudo reboot
