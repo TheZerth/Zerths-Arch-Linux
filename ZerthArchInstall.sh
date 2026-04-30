@@ -69,8 +69,7 @@ handleInstall man-pages
 handleInstall texinfo
 handleInstall nano
 handleInstall neovim
-handleInstall starship
-handleInstall fzf
+handleInstall fish
 
 echo -e "${Title}Configuring Terminal${END}"
 cd
@@ -137,3 +136,6 @@ handleInstall freecad
 handleInstall firefox
 handleInstall visual-studio-code-bin
 handleInstall jetbrains-toolbox
+
+chsh /usr/bin/fish
+sudo reboot
