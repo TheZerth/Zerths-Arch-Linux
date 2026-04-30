@@ -32,6 +32,16 @@ handleInstall() {
 	fi
 }
 
+handleRemove() {
+	local pkg="$1"
+	if paru -Qq | grep -qx "$pkg"; then
+		echo -e "$pkg ${Install}installed${END}, ${Fail}removing${END}."
+		paru -Rns --noconfirm "$pkg" || echo "Could not remove $pkg; continuing."
+	else
+		echo -e "$pkg ${Success}not installed${END}."
+	fi
+}
+
 runAsInstallUser() {
 	if [ "$(id -u)" -eq 0 ] && [ "$InstallUser" != "root" ]; then
 		sudo -u "$InstallUser" env HOME="$InstallHome" XDG_RUNTIME_DIR="/run/user/$InstallUid" "$@"
@@ -169,6 +179,290 @@ ensureHyprLine() {
 	fi
 }
 
+setHyprBlockOption() {
+	local block="$1"
+	local option="$2"
+	local value="$3"
+	local config="$4"
+	local block_regex
+	local option_regex
+
+	block_regex="$(printf '%s\n' "$block" | sed 's/[][\\.^$*+?{}|()]/\\&/g')"
+	option_regex="$(printf '%s\n' "$option" | sed 's/[][\\.^$*+?{}|()]/\\&/g')"
+
+	if grep -qE "^[[:space:]]*$block_regex[[:space:]]*\{" "$config"; then
+		if sed -n -E "/^[[:space:]]*$block_regex[[:space:]]*\{/,/^[[:space:]]*\}/p" "$config" | grep -qE "^[[:space:]]*$option_regex[[:space:]]*="; then
+			sed -i -E "/^[[:space:]]*$block_regex[[:space:]]*\{/,/^[[:space:]]*\}/ s|^[[:space:]]*$option_regex[[:space:]]*=.*|    $option = $value|" "$config"
+		else
+			sed -i -E "/^[[:space:]]*$block_regex[[:space:]]*\{/a\\    $option = $value" "$config"
+		fi
+	else
+		printf '\n%s {\n    %s = %s\n}\n' "$block" "$option" "$value" >> "$config"
+	fi
+}
+
+configureSamsungOledG8Monitor() {
+	local config="$1"
+	local output="${ZERTH_HYPR_MONITOR_OUTPUT:-}"
+
+	sed -i -E '/^[[:space:]]*monitor[[:space:]]*=[[:space:]]*,[[:space:]]*preferred[[:space:]]*,[[:space:]]*auto[[:space:]]*,[[:space:]]*(auto|1)[[:space:]]*$/d' "$config"
+	sed -i '/^# Zerth Samsung OLED G8 monitor start$/,/^# Zerth Samsung OLED G8 monitor end$/d' "$config"
+
+	{
+		printf '\n# Zerth Samsung OLED G8 monitor start\n'
+		printf '# Set ZERTH_HYPR_MONITOR_OUTPUT before running to pin a specific output, e.g. DP-1 or HDMI-A-1.\n'
+		printf 'monitorv2 {\n'
+		printf '    output = %s\n' "$output"
+		printf '    mode = 3440x1440@120\n'
+		printf '    position = 0x0\n'
+		printf '    scale = 1\n'
+		printf '    bitdepth = 10\n'
+		printf '    cm = hdr\n'
+		printf '    sdrbrightness = 1.2\n'
+		printf '    sdrsaturation = 1.0\n'
+		printf '    sdr_min_luminance = 0.005\n'
+		printf '    sdr_max_luminance = 250\n'
+		printf '    sdr_eotf = srgb\n'
+		printf '    vrr = 1\n'
+		printf '    supports_wide_color = 1\n'
+		printf '    supports_hdr = 1\n'
+		printf '}\n'
+		printf '# Zerth Samsung OLED G8 monitor end\n'
+	} >> "$config"
+}
+
+configureHyprpaperConfig() {
+	local config="$InstallHome/.config/hypr/hyprpaper.conf"
+	local wallpaper="${ZERTH_HYPRPAPER_WALLPAPER:-$InstallHome/Pictures/wallpaper.png}"
+	local escaped_wallpaper
+
+	escaped_wallpaper="$(printf '%s\n' "$wallpaper" | sed 's/[&|\\]/\\&/g')"
+
+	echo "Configure Hyprpaper"
+	mkdir -p "$InstallHome/.config/hypr" "$InstallHome/Pictures"
+	if [ ! -f "$config" ]; then
+		{
+			printf '# Zerth wallpaper section\n'
+			printf '# Hyprpaper needs a local image path. Override before running with:\n'
+			printf '# ZERTH_HYPRPAPER_WALLPAPER=/path/to/wallpaper.png\n'
+			printf 'preload = %s\n' "$wallpaper"
+			printf 'wallpaper = ,%s\n' "$wallpaper"
+			printf 'splash = false\n'
+		} > "$config"
+	else
+		if grep -qE '^[[:space:]]*preload[[:space:]]*=' "$config"; then
+			sed -i -E "0,/^[[:space:]]*preload[[:space:]]*=/{s|^[[:space:]]*preload[[:space:]]*=.*|preload = $escaped_wallpaper|}" "$config"
+		else
+			printf '\n# Zerth wallpaper section\npreload = %s\n' "$wallpaper" >> "$config"
+		fi
+
+		if grep -qE '^[[:space:]]*wallpaper[[:space:]]*=' "$config"; then
+			sed -i -E "0,/^[[:space:]]*wallpaper[[:space:]]*=/{s|^[[:space:]]*wallpaper[[:space:]]*=.*|wallpaper = ,$escaped_wallpaper|}" "$config"
+		else
+			printf 'wallpaper = ,%s\n' "$wallpaper" >> "$config"
+		fi
+
+		if grep -qE '^[[:space:]]*splash[[:space:]]*=' "$config"; then
+			sed -i -E '0,/^[[:space:]]*splash[[:space:]]*=/{s|^[[:space:]]*splash[[:space:]]*=.*|splash = false|}' "$config"
+		else
+			printf 'splash = false\n' >> "$config"
+		fi
+	fi
+
+	if ! grep -qF 'ZERTH_HYPRPAPER_WALLPAPER=/path/to/wallpaper.png' "$config"; then
+		{
+			printf '\n'
+			printf '# Zerth wallpaper section\n'
+			printf '# Hyprpaper needs a local image path. Override before running with:\n'
+			printf '# ZERTH_HYPRPAPER_WALLPAPER=/path/to/wallpaper.png\n'
+		} >> "$config"
+	fi
+
+	if [ "$InstallUser" != "root" ]; then
+		sudo chown "$InstallUser:$InstallGroup" "$config" "$InstallHome/Pictures"
+	fi
+}
+
+configureEwwConfig() {
+	local config_dir="$InstallHome/.config/eww"
+	local yuck="$config_dir/eww.yuck"
+	local scss="$config_dir/eww.scss"
+	local status_script="$config_dir/zerth-status.sh"
+
+	echo "Configure Eww overlay"
+	mkdir -p "$config_dir"
+	cat > "$status_script" <<'EOF'
+#! /usr/bin/env bash
+
+case "$1" in
+	time)
+		date '+%H:%M:%S'
+		;;
+	date)
+		date '+%a %d %b'
+		;;
+	audio)
+		if command -v wpctl >/dev/null 2>&1; then
+			status="$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null)"
+			volume="$(printf '%s\n' "$status" | awk '{printf "%d", $2 * 100}')"
+			if printf '%s\n' "$status" | grep -q MUTED; then
+				printf 'MUTE %s%%\n' "$volume"
+			else
+				printf 'VOL %s%%\n' "$volume"
+			fi
+		else
+			printf 'VOL --\n'
+		fi
+		;;
+	network)
+		if command -v nmcli >/dev/null 2>&1; then
+			nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | awk -F: '$1 == "yes" && $2 != "" {print "NET " $2; found=1; exit} END {if (!found) print "NET --"}'
+		else
+			printf 'NET --\n'
+		fi
+		;;
+	workspace)
+		if command -v hyprctl >/dev/null 2>&1; then
+			hyprctl activeworkspace 2>/dev/null | awk -F': ' '/workspace ID/ {print "WS " $2; found=1; exit} END {if (!found) print "WS --"}'
+		else
+			printf 'WS --\n'
+		fi
+		;;
+	memory)
+		free -h 2>/dev/null | awk '/^Mem:/ {print "MEM " $3 "/" $2}'
+		;;
+	cpu)
+		awk '{printf "CPU %.2f %.2f %.2f\n", $1, $2, $3}' /proc/loadavg
+		;;
+	*)
+		printf -- '--\n'
+		;;
+esac
+EOF
+	chmod 755 "$status_script"
+
+	cat > "$yuck" <<EOF
+(defpoll zerth_time :interval "1s" "$status_script time")
+(defpoll zerth_date :interval "60s" "$status_script date")
+(defpoll zerth_audio :interval "2s" "$status_script audio")
+(defpoll zerth_network :interval "5s" "$status_script network")
+(defpoll zerth_workspace :interval "1s" "$status_script workspace")
+(defpoll zerth_memory :interval "3s" "$status_script memory")
+(defpoll zerth_cpu :interval "3s" "$status_script cpu")
+
+(defwindow zerth_overlay
+  :monitor 0
+  :geometry (geometry :x "0%" :y "0%" :width "100%" :height "100%" :anchor "top left")
+  :stacking "overlay"
+  :exclusive false
+  :focusable false
+  (zerth_screen))
+
+(defwidget zerth_readout [label value]
+  (box :class "readout" :orientation "h" :space-evenly false
+    (label :class "readout-key" :text label)
+    (label :class "readout-value" :text value)))
+
+(defwidget zerth_button [label command]
+  (button :class "stone-button" :onclick command label))
+
+(defwidget zerth_screen []
+  (box :class "screen-dim" :orientation "v" :space-evenly false
+    (box :class "stone-panel top-panel" :orientation "h" :space-evenly false
+      (label :class "sigil" :text "ZERTH")
+      (zerth_readout :label "TIME" :value zerth_time)
+      (zerth_readout :label "DATE" :value zerth_date)
+      (zerth_readout :label "AUDIO" :value zerth_audio)
+      (zerth_readout :label "NET" :value zerth_network)
+      (zerth_readout :label "LOAD" :value zerth_cpu)
+      (zerth_readout :label "MEM" :value zerth_memory)
+      (zerth_readout :label "SPACE" :value zerth_workspace))
+    (box :class "spacer")
+    (box :class "stone-panel control-panel" :orientation "h" :space-evenly false
+      (zerth_button :label "-VOL" :command "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-")
+      (zerth_button :label "MUTE" :command "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle")
+      (zerth_button :label "+VOL" :command "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+")
+      (zerth_button :label "TERM" :command "foot")
+      (zerth_button :label "MENU" :command "fuzzel")
+      (zerth_button :label "FILES" :command "pcmanfm-qt"))))
+EOF
+
+	cat > "$scss" <<'EOF'
+* {
+  all: unset;
+  font-family: "ProggyClean", "Terminus", monospace;
+  font-size: 16px;
+}
+
+.screen-dim {
+  background-color: rgba(5, 4, 8, 0.78);
+  color: #d5d0d8;
+}
+
+.stone-panel {
+  margin: 18px;
+  padding: 10px 12px;
+  background-color: #111016;
+  border: 2px solid #7b7684;
+  box-shadow: inset 0 0 0 2px #24202d, 0 0 0 2px #050408;
+}
+
+.top-panel {
+  border-color: #a7a1ad;
+}
+
+.control-panel {
+  margin-bottom: 26px;
+}
+
+.sigil {
+  margin-right: 18px;
+  padding: 4px 10px;
+  color: #f0edf2;
+  background-color: #22172f;
+  border: 1px solid #a7a1ad;
+}
+
+.readout {
+  margin-right: 12px;
+  padding: 4px 8px;
+  background-color: #0b0a0f;
+  border: 1px solid #4d4855;
+}
+
+.readout-key {
+  margin-right: 6px;
+  color: #918999;
+}
+
+.readout-value {
+  color: #e4e0e8;
+}
+
+.stone-button {
+  margin-right: 10px;
+  padding: 5px 10px;
+  color: #e4e0e8;
+  background-color: #17131d;
+  border: 1px solid #817988;
+}
+
+.stone-button:hover {
+  color: #ffffff;
+  background-color: #2a2036;
+  border-color: #c8c3cf;
+}
+
+.spacer {
+  min-height: 1px;
+}
+EOF
+
+	if [ "$InstallUser" != "root" ]; then
+		sudo chown -R "$InstallUser:$InstallGroup" "$config_dir"
+	fi
+}
+
 configureHyprlandConfig() {
 	local config="$InstallHome/.config/hypr/hyprland.conf"
 
@@ -182,11 +476,23 @@ configureHyprlandConfig() {
 	sed -i -E '/^[[:space:]]*general[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*gaps_in[[:space:]]*=.*/    gaps_in = 2/' "$config"
 	sed -i -E '/^[[:space:]]*general[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*gaps_out[[:space:]]*=.*/    gaps_out = 5/' "$config"
 	sed -i -E '/^[[:space:]]*general[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*border_size[[:space:]]*=.*/    border_size = 1/' "$config"
+	setHyprBlockOption general col.active_border 'rgba(c8c8d0ff) rgba(0b0612ff) rgba(e6e6ecff) rgba(170026ff) rgba(c8c8d0ff) 45deg' "$config"
+	setHyprBlockOption general col.inactive_border 'rgba(55515dcc) rgba(0b0612cc) rgba(2a2633cc) 45deg' "$config"
 	sed -i -E '/^[[:space:]]*decoration[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*rounding[[:space:]]*=.*/    rounding = 0/' "$config"
 	sed -i -E '/^[[:space:]]*decoration[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*rounding_power[[:space:]]*=.*/    rounding_power = 0/' "$config"
 	sed -i -E '/^[[:space:]]*shadow[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*enabled[[:space:]]*=.*/        enabled = false/' "$config"
 	sed -i -E '/^[[:space:]]*blur[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*enabled[[:space:]]*=.*/        enabled = false/' "$config"
 	sed -i -E '/^[[:space:]]*animations[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*enabled[[:space:]]*=.*/    enabled = false/' "$config"
+	setHyprBlockOption misc disable_hyprland_logo true "$config"
+	setHyprBlockOption misc disable_splash_rendering true "$config"
+	setHyprBlockOption misc force_default_wallpaper 0 "$config"
+	setHyprBlockOption render cm_enabled true "$config"
+	setHyprBlockOption render cm_fs_passthrough 2 "$config"
+	setHyprBlockOption render cm_auto_hdr 1 "$config"
+	setHyprBlockOption render send_content_type true "$config"
+	setHyprBlockOption render use_fp16 2 "$config"
+	setHyprBlockOption render keep_unmodified_copy 2 "$config"
+	configureSamsungOledG8Monitor "$config"
 
 	if grep -qE '^\s*\$terminal\s*=' "$config"; then
 		sed -i -E 's|^\s*\$terminal\s*=.*|$terminal = foot|' "$config"
@@ -207,7 +513,14 @@ configureHyprlandConfig() {
 	fi
 
 	ensureHyprLine 'env = LIBVA_DRIVER_NAME,nvidia' "$config"
+	ensureHyprLine 'env = GBM_BACKEND,nvidia-drm' "$config"
 	ensureHyprLine 'env = __GLX_VENDOR_LIBRARY_NAME,nvidia' "$config"
+	ensureHyprLine 'env = XDG_CURRENT_DESKTOP,Hyprland' "$config"
+	ensureHyprLine 'env = XDG_SESSION_TYPE,wayland' "$config"
+	ensureHyprLine 'env = XDG_SESSION_DESKTOP,Hyprland' "$config"
+	ensureHyprLine 'env = GDK_BACKEND,wayland,x11,*' "$config"
+	ensureHyprLine 'env = QT_QPA_PLATFORM,wayland;xcb' "$config"
+	ensureHyprLine 'env = CLUTTER_BACKEND,wayland' "$config"
 	ensureHyprLine 'env = ELECTRON_OZONE_PLATFORM_HINT,auto' "$config"
 	ensureHyprLine 'env = NVD_BACKEND,direct' "$config"
 
@@ -217,16 +530,19 @@ configureHyprlandConfig() {
 	ensureHyprLine 'exec-once = systemctl --user start xdg-desktop-portal xdg-desktop-portal-hyprland' "$config"
 	ensureHyprLine 'exec-once = dunst' "$config"
 	ensureHyprLine 'exec-once = hyprpaper' "$config"
-	ensureHyprLine 'exec-once = ashell' "$config"
+	sed -i -E '/^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*ashell[[:space:]]*$/d' "$config"
+	ensureHyprLine 'exec-once = eww daemon' "$config"
 	ensureHyprLine 'exec-once = udiskie --tray' "$config"
 	ensureHyprLine 'exec-once = wl-paste --type text --watch cliphist store' "$config"
 	ensureHyprLine 'exec-once = wl-paste --type image --watch cliphist store' "$config"
-	ensureHyprLine "exec-once = sh -c 'command -v monique >/dev/null 2>&1 && monique'" "$config"
+	sed -i -E "/^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*sh -c 'command -v monique >\/dev\/null 2>&1 && monique'[[:space:]]*$/d" "$config"
 
 	ensureHyprLine 'bind = $mainMod SHIFT, V, exec, cliphist list | fuzzel --dmenu | cliphist decode | wl-copy' "$config"
 	ensureHyprLine 'bind = $mainMod, M, exec, command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch exit' "$config"
 	ensureHyprLine 'bind = $mainMod, E, exec, $fileManager' "$config"
 	ensureHyprLine 'bind = $mainMod, R, exec, $menu' "$config"
+	ensureHyprLine 'bind = $mainMod, T, exec, eww open zerth_overlay' "$config"
+	ensureHyprLine 'bindr = $mainMod, T, exec, eww close zerth_overlay' "$config"
 
 	if [ "$InstallUser" != "root" ]; then
 		sudo chown "$InstallUser:$InstallGroup" "$config"
@@ -330,6 +646,7 @@ handleInstall nvidia-open-dkms
 handleInstall nvidia-utils 
 handleInstall lib32-nvidia-utils 
 handleInstall nvidia-settings
+handleInstall libva-nvidia-driver
 handleInstall gamemode
 handleInstall lib32-gamemode
 handleInstall vulkan-tools
@@ -356,7 +673,8 @@ handleInstall dunst
 handleInstall libnotify
 handleInstall qt5-wayland
 handleInstall qt6-wayland
-handleInstall ashell
+handleRemove ashell
+handleInstall eww
 handleInstall fuzzel
 handleInstall wl-clipboard
 handleInstall cliphist
@@ -396,6 +714,8 @@ else
 	fi
 fi
 configureHyprlandConfig
+configureHyprpaperConfig
+configureEwwConfig
 
 echo -e "${Title}Install Applications${END}"
 handleInstall foot
@@ -407,7 +727,8 @@ handleInstall protontricks
 handleInstall wine
 handleInstall winetricks
 handleInstall freecad
-handleInstall firefox
+handleRemove firefox
+handleInstall helium-browser-bin
 handleInstall visual-studio-code-bin
 handleInstall jetbrains-toolbox
 handleInstall btop
@@ -438,6 +759,7 @@ echo "Configure Foot font"
 ProggyFont="$InstallHome/proggyfonts/ProggyOriginal/ProggyClean.ttf"
 FootConfig="$InstallHome/.config/foot/foot.ini"
 FootFont="ProggyClean"
+FootFontSize=16
 if [ -f "$ProggyFont" ]; then
 	mkdir -p "$InstallHome/.local/share/fonts/proggyfonts" "$InstallHome/.config/foot"
 	ln -sf "$ProggyFont" "$InstallHome/.local/share/fonts/proggyfonts/ProggyClean.ttf"
@@ -450,14 +772,14 @@ if [ -f "$ProggyFont" ]; then
 	fi
 	if [ -f "$FootConfig" ]; then
 		if grep -qE '^\s*font=' "$FootConfig"; then
-			sed -i "s|^\s*font=.*|font=$FootFont:pixelsize=14|" "$FootConfig"
+			sed -i "s|^\s*font=.*|font=$FootFont:pixelsize=$FootFontSize|" "$FootConfig"
 		elif grep -qE '^\s*\[main\]' "$FootConfig"; then
-			sed -i "/^\s*\[main\]/a font=$FootFont:pixelsize=14" "$FootConfig"
+			sed -i "/^\s*\[main\]/a font=$FootFont:pixelsize=$FootFontSize" "$FootConfig"
 		else
-			printf "\n[main]\nfont=%s:pixelsize=14\n" "$FootFont" >> "$FootConfig"
+			printf "\n[main]\nfont=%s:pixelsize=%s\n" "$FootFont" "$FootFontSize" >> "$FootConfig"
 		fi
 	else
-		printf "[main]\nfont=%s:pixelsize=14\n" "$FootFont" > "$FootConfig"
+		printf "[main]\nfont=%s:pixelsize=%s\n" "$FootFont" "$FootFontSize" > "$FootConfig"
 	fi
 	if [ "$InstallUser" != "root" ]; then
 		sudo chown -R "$InstallUser:$InstallGroup" "$InstallHome/.config/foot" "$InstallHome/.local/share/fonts/proggyfonts"
