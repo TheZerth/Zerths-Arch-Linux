@@ -137,5 +137,11 @@ handleInstall firefox
 handleInstall visual-studio-code-bin
 handleInstall jetbrains-toolbox
 
+cd
+mkdir USB
+mount /dev/sda1 ./USB
+cp -r ./USB/.ssh/* ~/.ssh/
+umount /dev/sda1
+
 chsh /usr/bin/fish
 sudo reboot
