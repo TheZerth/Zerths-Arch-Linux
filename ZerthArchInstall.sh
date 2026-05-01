@@ -855,14 +855,17 @@ EOF
 configureHyprlockConfig() {
 	local config="$InstallHome/.config/hypr/hyprlock.conf"
 
-	echo "Configure Hyprlock"
+	echo "Configure Hyprlock Lapis Obscura sealed-gate theme"
 	mkdir -p "$InstallHome/.config/hypr"
-	if [ ! -f "$config" ]; then
-		cat > "$config" <<'EOF'
+	cat > "$config" <<'EOF'
+# Zerth Lapis Obscura hyprlock theme.
+# Void background, centered sigil/gate, muted stone text, gold focus, rust failure.
 general {
     hide_cursor = true
-    no_fade_in = true
-    no_fade_out = true
+}
+
+animations {
+    enabled = false
 }
 
 background {
@@ -870,35 +873,71 @@ background {
     color = rgba(050408ff)
 }
 
-input-field {
+# Quiet seal glyph: a single diamond/gate suspended in the void.
+label {
     monitor =
-    size = 300, 40
-    position = 0, -80
+    text = ◇
+    color = rgba(d8a657ff)
+    font_size = 54
+    font_family = ProggyClean, Terminus, monospace
+    position = 0, 92
     halign = center
     valign = center
-    outline_thickness = 1
-    outer_color = rgba(7b7684ff)
-    inner_color = rgba(111016ff)
-    font_color = rgba(e4e0e8ff)
-    check_color = rgba(c8c8d0ff)
-    fail_color = rgba(cc3333ff)
-    placeholder_text = <span foreground="##918999">passphrase</span>
-    hide_input = false
 }
 
 label {
     monitor =
-    text = cmd[update:1000] echo "$TIME"
-    color = rgba(d5d0d8ff)
-    font_size = 16
+    text = SEALED GATE
+    color = rgba(918999ff)
+    font_size = 13
     font_family = ProggyClean, Terminus, monospace
-    position = 0, 80
+    position = 0, 36
+    halign = center
+    valign = center
+}
+
+input-field {
+    monitor =
+    size = 340, 42
+    position = 0, -34
+    halign = center
+    valign = center
+    outline_thickness = 1
+    outer_color = rgba(d8a657ff)
+    inner_color = rgba(111016ee)
+    font_color = rgba(e4e0e8ff)
+    check_color = rgba(98971aff)
+    fail_color = rgba(cc241dff)
+    placeholder_text = <span foreground="##918999">passphrase</span>
+    hide_input = false
+    dots_size = 0.18
+    dots_spacing = 0.18
+    fade_on_empty = false
+}
+
+label {
+    monitor =
+    text = cmd[update:1000] date +"%H:%M:%S"
+    color = rgba(c8c8d0ff)
+    font_size = 21
+    font_family = ProggyClean, Terminus, monospace
+    position = 0, -104
+    halign = center
+    valign = center
+}
+
+label {
+    monitor =
+    text = cmd[update:60000] date +"%a %d %b"
+    color = rgba(918999ff)
+    font_size = 13
+    font_family = ProggyClean, Terminus, monospace
+    position = 0, -134
     halign = center
     valign = center
 }
 EOF
-		echo "Written $config"
-	fi
+	echo "Written $config"
 	if [ "$InstallUser" != "root" ]; then
 		chown "$InstallUser:$InstallGroup" "$config"
 	fi
