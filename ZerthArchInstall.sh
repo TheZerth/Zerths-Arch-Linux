@@ -684,14 +684,10 @@ handleInstall monique
 echo "Start Hyprland once to generate configs"
 if [ -n "$WAYLAND_DISPLAY" ] || [ -n "$DISPLAY" ]; then
 	echo "Skipping Hyprland first-run because a graphical session is already active."
-	setNvidiaPersistenceMode
-	setNvidiaPowerMizerMode
 elif [ "$InstallUser" = "root" ]; then
 	echo "Skipping Hyprland first-run because no non-root install user was detected."
-	setNvidiaPersistenceMode
 elif ! command -v start-hyprland >/dev/null 2>&1; then
 	echo "start-hyprland not found; skipping Hyprland first-run."
-	setNvidiaPersistenceMode
 else
 	HyprlandLog="$InstallHome/.cache/zerth-hyprland-first-run.log"
 	mkdir -p "$InstallHome/.cache"
@@ -701,9 +697,6 @@ else
 	runAsInstallUser start-hyprland -- > "$HyprlandLog" 2>&1 &
 	HyprlandPid=$!
 	sleep 10
-
-	setNvidiaPersistenceMode
-	setNvidiaPowerMizerModeInHyprland
 
 	if runAsInstallUser hyprctl --instance 0 dispatch exec hyprshutdown >/dev/null 2>&1; then
 		waitForHyprlandExit "$HyprlandPid"
