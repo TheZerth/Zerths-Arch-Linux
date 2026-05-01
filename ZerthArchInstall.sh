@@ -490,8 +490,6 @@ configureHyprlandConfig() {
 	setHyprBlockOption render cm_fs_passthrough 2 "$config"
 	setHyprBlockOption render cm_auto_hdr 1 "$config"
 	setHyprBlockOption render send_content_type true "$config"
-	setHyprBlockOption render use_fp16 2 "$config"
-	setHyprBlockOption render keep_unmodified_copy 2 "$config"
 	configureSamsungOledG8Monitor "$config"
 
 	if grep -qE '^\s*\$terminal\s*=' "$config"; then
