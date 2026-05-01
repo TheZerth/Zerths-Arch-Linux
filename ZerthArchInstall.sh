@@ -404,6 +404,20 @@ case "$1" in
 	cpu)
 		awk '{printf "CPU %.2f %.2f %.2f\n", $1, $2, $3}' /proc/loadavg
 		;;
+	launch-btop)
+		if command -v hyprctl >/dev/null 2>&1; then
+			hyprctl dispatch exec "foot --app-id zerth-btop --title 'Zerth System' -e btop" >/dev/null 2>&1
+		else
+			foot --app-id zerth-btop --title 'Zerth System' -e btop >/dev/null 2>&1 &
+		fi
+		;;
+	launch-hermes)
+		if command -v hyprctl >/dev/null 2>&1; then
+			hyprctl dispatch exec "foot --app-id zerth-hermes --title 'Zerth Hermes' -e sh -lc 'export PATH=\"$HOME/.local/bin:$PATH\"; if command -v hermes >/dev/null 2>&1; then hermes --tui; else printf \"Hermes not found. Press Enter.\"; read -r _; fi'" >/dev/null 2>&1
+		else
+			foot --app-id zerth-hermes --title 'Zerth Hermes' -e sh -lc 'export PATH="$HOME/.local/bin:$PATH"; if command -v hermes >/dev/null 2>&1; then hermes --tui; else printf "Hermes not found. Press Enter."; read -r _; fi' >/dev/null 2>&1 &
+		fi
+		;;
 	*)
 		printf -- '--\n'
 		;;
@@ -436,6 +450,12 @@ EOF
 (defwidget zerth_button [label command]
   (button :class "stone-button" :onclick command label))
 
+(defwidget zerth_console_card [title subtitle command]
+  (box :class "console-card" :orientation "v" :space-evenly false
+    (label :class "console-title" :halign "start" :text title)
+    (label :class "console-subtitle" :halign "start" :text subtitle)
+    (button :class "console-launch" :halign "start" :onclick command "OPEN")))
+
 (defwidget zerth_screen []
   (box :class "screen-dim" :orientation "v" :space-evenly false
     (box :class "stone-panel top-panel" :orientation "h" :space-evenly false
@@ -447,12 +467,17 @@ EOF
       (zerth_readout :label "LOAD" :value zerth_cpu)
       (zerth_readout :label "MEM" :value zerth_memory)
       (zerth_readout :label "SPACE" :value zerth_workspace))
+    (box :class "desk" :orientation "h" :space-evenly false
+      (zerth_console_card :title "SYSTEM" :subtitle "btop telemetry / process field" :command "$status_script launch-btop")
+      (zerth_console_card :title "HERMES" :subtitle "agent TUI / local memory interface" :command "$status_script launch-hermes"))
     (box :class "spacer")
     (box :class "stone-panel control-panel" :orientation "h" :space-evenly false
       (zerth_button :label "-VOL" :command "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-")
       (zerth_button :label "MUTE" :command "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle")
       (zerth_button :label "+VOL" :command "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+")
       (zerth_button :label "TERM" :command "foot")
+      (zerth_button :label "SYS" :command "$status_script launch-btop")
+      (zerth_button :label "AI" :command "$status_script launch-hermes")
       (zerth_button :label "MENU" :command "fuzzel")
       (zerth_button :label "FILES" :command "pcmanfm-qt"))))
 EOF
@@ -465,20 +490,58 @@ EOF
 }
 
 .screen-dim {
-  background-color: rgba(5, 4, 8, 0.78);
-  color: #d5d0d8;
+  background-color: rgba(2, 2, 6, 0.84);
+  color: #d8d5e6;
 }
 
 .stone-panel {
   margin: 18px;
   padding: 10px 12px;
-  background-color: #111016;
-  border: 2px solid #7b7684;
-  box-shadow: inset 0 0 0 2px #24202d, 0 0 0 2px #050408;
+  background-color: #090812;
+  border: 1px solid #6f5cff;
+  box-shadow: inset 0 0 0 1px #1b1730, 0 0 18px rgba(88, 70, 255, 0.20);
 }
 
 .top-panel {
-  border-color: #a7a1ad;
+  border-color: #8f7dff;
+}
+
+.desk {
+  margin: 0 18px;
+}
+
+.console-card {
+  min-width: 360px;
+  margin-right: 18px;
+  padding: 18px;
+  background-color: #07060d;
+  border: 1px solid #4a3fb0;
+  box-shadow: inset 0 0 0 1px #151224, 0 0 24px rgba(74, 63, 176, 0.22);
+}
+
+.console-title {
+  color: #f1efff;
+  font-size: 22px;
+  letter-spacing: 2px;
+}
+
+.console-subtitle {
+  margin-top: 8px;
+  color: #8f8aa8;
+}
+
+.console-launch {
+  margin-top: 14px;
+  padding: 6px 12px;
+  color: #d8d5ff;
+  background-color: #121026;
+  border: 1px solid #6f5cff;
+}
+
+.console-launch:hover {
+  color: #ffffff;
+  background-color: #241b4a;
+  border-color: #c4bbff;
 }
 
 .control-panel {
@@ -488,39 +551,39 @@ EOF
 .sigil {
   margin-right: 18px;
   padding: 4px 10px;
-  color: #f0edf2;
-  background-color: #22172f;
-  border: 1px solid #a7a1ad;
+  color: #ffffff;
+  background-color: #17122c;
+  border: 1px solid #8f7dff;
 }
 
 .readout {
   margin-right: 12px;
   padding: 4px 8px;
-  background-color: #0b0a0f;
-  border: 1px solid #4d4855;
+  background-color: #05040a;
+  border: 1px solid #34304d;
 }
 
 .readout-key {
   margin-right: 6px;
-  color: #918999;
+  color: #8f8aa8;
 }
 
 .readout-value {
-  color: #e4e0e8;
+  color: #e8e4ff;
 }
 
 .stone-button {
   margin-right: 10px;
   padding: 5px 10px;
-  color: #e4e0e8;
-  background-color: #17131d;
-  border: 1px solid #817988;
+  color: #e8e4ff;
+  background-color: #0d0b18;
+  border: 1px solid #5c528a;
 }
 
 .stone-button:hover {
   color: #ffffff;
-  background-color: #2a2036;
-  border-color: #c8c3cf;
+  background-color: #241b4a;
+  border-color: #c4bbff;
 }
 
 .spacer {
@@ -1092,6 +1155,13 @@ configureHyprlandConfig() {
 	ensureHyprLine 'exec-once = hyprpaper' "$config"
 	sed -i -E '/^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*ashell[[:space:]]*$/d' "$config"
 	ensureHyprLine 'exec-once = eww daemon' "$config"
+	ensureHyprLine 'windowrulev2 = float,class:^(zerth-btop|zerth-hermes)$' "$config"
+	ensureHyprLine 'windowrulev2 = pin,class:^(zerth-btop|zerth-hermes)$' "$config"
+	ensureHyprLine 'windowrulev2 = size 44% 70%,class:^(zerth-btop)$' "$config"
+	ensureHyprLine 'windowrulev2 = move 2% 14%,class:^(zerth-btop)$' "$config"
+	ensureHyprLine 'windowrulev2 = size 44% 70%,class:^(zerth-hermes)$' "$config"
+	ensureHyprLine 'windowrulev2 = move 54% 14%,class:^(zerth-hermes)$' "$config"
+	ensureHyprLine 'windowrulev2 = opacity 0.96 0.92,class:^(zerth-btop|zerth-hermes)$' "$config"
 	ensureHyprLine 'exec-once = udiskie --tray' "$config"
 	ensureHyprLine 'exec-once = wl-paste --type text --watch cliphist store' "$config"
 	ensureHyprLine 'exec-once = wl-paste --type image --watch cliphist store' "$config"
@@ -1104,6 +1174,8 @@ configureHyprlandConfig() {
 	ensureHyprLine 'bind = $mainMod, R, exec, $menu' "$config"
 	ensureHyprLine 'bind = $mainMod, T, exec, eww open zerth_overlay' "$config"
 	ensureHyprLine 'bindr = $mainMod, T, exec, eww close zerth_overlay' "$config"
+	ensureHyprLine "bind = \$mainMod SHIFT, B, exec, $InstallHome/.config/eww/zerth-status.sh launch-btop" "$config"
+	ensureHyprLine "bind = \$mainMod SHIFT, H, exec, $InstallHome/.config/eww/zerth-status.sh launch-hermes" "$config"
 	ensureHyprLine 'bind = $mainMod, L, exec, hyprlock' "$config"
 	ensureHyprLine 'bind = , Print, exec, grim - | wl-copy' "$config"
 	ensureHyprLine 'bind = SHIFT, Print, exec, grim -g "$(slurp)" - | wl-copy' "$config"
