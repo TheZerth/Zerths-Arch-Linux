@@ -47,7 +47,7 @@ buildAndInstallParu() {
 	mkdir -p "$InstallHome/.cache"
 	chown "$InstallUser:$InstallGroup" "$InstallHome/.cache"
 	runAsInstallUser git clone "https://aur.archlinux.org/paru.git" "$paruBuildDir"
-	runAsInstallUser sh -lc 'cd "$HOME/.cache/paru-build" && makepkg -s --noconfirm'
+	runAsInstallUser sh -lc 'cd "'"$paruBuildDir"'" && makepkg -s --noconfirm'
 	local paruPackages=("$paruBuildDir"/*.pkg.tar.zst)
 	pacman -U --noconfirm "${paruPackages[@]}" || { echo "ERROR: Failed to install paru package. Aborting." >&2; exit 1; }
 	rm -rf "$paruBuildDir"
