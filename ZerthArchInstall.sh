@@ -37,9 +37,47 @@ runAsInstallUser() {
 	fi
 }
 
-handleInstallMany() {
-	# Install multiple packages in one paru call to leverage parallel downloads.
-	# This script runs as root, but paru/makepkg must run as the target user.
+ensureParuWorks() {
+	if [ ! -x /usr/bin/paru ]; then
+		echo -e "Paru ${Fail}not${END} found, ${Install}installing${END}."
+		if [ "$InstallUser" = "root" ]; then
+			echo "ERROR: Cannot build paru as root. Run this script through sudo from the target user." >&2
+			exit 1
+		fi
+		local paruBuildDir="$InstallHome/.cache/paru-bin-build"
+		rm -rf "$paruBuildDir"
+		mkdir -p "$InstallHome/.cache"
+		chown "$InstallUser:$InstallGroup" "$InstallHome/.cache"
+		runAsInstallUser git clone "https://aur.archlinux.org/paru-bin.git" "$paruBuildDir"
+		runAsInstallUser sh -lc 'cd "$HOME/.cache/paru-bin-build" && makepkg --noconfirm'
+		local paruPackages=("$paruBuildDir"/*.pkg.tar.zst)
+		pacman -U --noconfirm "${paruPackages[@]}" || { echo "ERROR: Failed to install paru package. Aborting." >&2; exit 1; }
+		rm -rf "$paruBuildDir"
+	else
+		echo -e "Paru ${Success}installed${END}."
+	fi
+}
+
+installRepoPackages() {
+	# Install official-repo packages as root via pacman.
+	local pkgs=()
+	local pkg
+	for pkg in "$@"; do
+		if ! pacman -Qq "$pkg" >/dev/null 2>&1; then
+			pkgs+=("$pkg")
+		fi
+	done
+	if [ "${#pkgs[@]}" -eq 0 ]; then
+		echo -e "All packages already ${Success}installed${END}."
+		return
+	fi
+	echo -e "Installing: ${Install}${pkgs[*]}${END}"
+	pacman -S --needed --noconfirm "${pkgs[@]}" || { echo "ERROR: Failed to install package group: ${pkgs[*]}" >&2; exit 1; }
+}
+
+installAurPackages() {
+	# Install AUR packages as the target user via paru.
+	ensureParuWorks
 	local pkgs=()
 	local pkg
 	for pkg in "$@"; do
@@ -53,10 +91,10 @@ handleInstallMany() {
 	fi
 	echo -e "Installing: ${Install}${pkgs[*]}${END}"
 	if [ "$InstallUser" = "root" ]; then
-		echo "ERROR: Cannot install AUR/repo package groups as root through paru. Run through sudo from the target user." >&2
+		echo "ERROR: Cannot install AUR packages as root through paru. Run through sudo from the target user." >&2
 		exit 1
 	fi
-	runAsInstallUser paru -S --needed --noconfirm --skipreview "${pkgs[@]}" || { echo "ERROR: Failed to install package group: ${pkgs[*]}" >&2; exit 1; }
+	runAsInstallUser paru -S --needed --noconfirm --skipreview "${pkgs[@]}" || { echo "ERROR: Failed to install AUR package group: ${pkgs[*]}" >&2; exit 1; }
 }
 
 handleRemove() {
@@ -1389,26 +1427,9 @@ runAsInstallUser git config --global user.email "drkainaan@icloud.com"
 runAsInstallUser git config --global user.name "TheZerth"
 
 echo -e "${Title}Acquiring Paru${END}"
-if [ ! -x /usr/bin/paru ]; then
-	echo -e "Paru ${Fail}not${END} found, ${Install}installing${END}."
-	if [ "$InstallUser" = "root" ]; then
-		echo "ERROR: Cannot build paru as root. Run this script through sudo from the target user." >&2
-		exit 1
-	fi
-	ParuBuildDir="$InstallHome/.cache/paru-bin-build"
-	rm -rf "$ParuBuildDir"
-	mkdir -p "$InstallHome/.cache"
-	chown "$InstallUser:$InstallGroup" "$InstallHome/.cache"
-	runAsInstallUser git clone "https://aur.archlinux.org/paru-bin.git" "$ParuBuildDir"
-	runAsInstallUser sh -lc 'cd "$HOME/.cache/paru-bin-build" && makepkg --noconfirm'
-	ParuPackages=("$ParuBuildDir"/*.pkg.tar.zst)
-	pacman -U --noconfirm "${ParuPackages[@]}" || { echo "ERROR: Failed to install paru package. Aborting." >&2; exit 1; }
-	rm -rf "$ParuBuildDir"
-else
-	echo -e "Paru ${Success}installed${END}."
-fi
+ensureParuWorks
 echo -e "${Title}Acquiring Base Packages${END}"
-handleInstallMany \
+installRepoPackages \
 	linux-zen-headers amd-ucode tuned sof-firmware linux-firmware-marvell \
 	man-db man-pages texinfo nano neovim fish python openssh uv \
 	github-cli age rsync \
@@ -1425,7 +1446,7 @@ if [ ! -d "$InstallHome/proggyfonts" ]; then
 else
 	echo -e "ProggyFonts ${Success}installed${END}."
 fi
-handleInstallMany terminus-font fontconfig
+installRepoPackages terminus-font fontconfig
 setfont ter-714n
 touch /etc/vconsole.conf
 if grep -qE '^\s*FONT=' /etc/vconsole.conf; then
@@ -1435,14 +1456,14 @@ else
 fi
 
 echo -e "${Title}Configuring Audio${END}"
-handleInstallMany \
+installRepoPackages \
 	pipewire lib32-pipewire pipewire-docs wireplumber \
 	pipewire-audio pipewire-alsa pipewire-pulse \
 	pipewire-jack lib32-pipewire-jack alsa-utils
 systemctl --global enable pipewire wireplumber pipewire-pulse
 
 echo -e "${Title}Configuring Video${END}"
-handleInstallMany \
+installRepoPackages \
 	dkms nvidia-open-dkms nvidia-utils lib32-nvidia-utils \
 	nvidia-settings libva-nvidia-driver \
 	gamemode lib32-gamemode vulkan-tools
@@ -1452,14 +1473,15 @@ setNvidiaPersistenceMode
 
 echo -e "${Title}Setup Desktop${END}"
 handleRemove ashell
-handleInstallMany \
+installRepoPackages \
 	hyprland aquamarine hyprlang hyprcursor hyprutils \
 	hyprgraphics hyprtoolkit hyprland-guiutils hyprwayland-scanner \
 	hyprpaper xdg-desktop-portal xdg-desktop-portal-hyprland xdg-desktop-portal-gtk \
-	hyprpolkitagent hyprpwcenter hyprshutdown \
+	hyprpolkitagent \
 	dunst libnotify qt5-wayland qt6-wayland \
-	eww fuzzel wl-clipboard cliphist udiskie pcmanfm-qt \
-	monique hyprlock hypridle grim slurp
+	fuzzel wl-clipboard cliphist udiskie pcmanfm-qt \
+	hyprlock hypridle grim slurp
+installAurPackages hyprpwcenter hyprshutdown eww monique
 echo "Start Hyprland once to generate configs"
 if [ -n "$WAYLAND_DISPLAY" ] || [ -n "$DISPLAY" ]; then
 	echo "Skipping Hyprland first-run because a graphical session is already active."
@@ -1494,10 +1516,10 @@ setNvidiaPowerMizerModeInHyprland
 
 echo -e "${Title}Install Applications${END}"
 handleRemove firefox
-handleInstallMany \
-	foot vesktop steam gamescope xorg-xwayland \
-	protontricks wine winetricks freecad \
-	zen-browser-bin visual-studio-code-bin jetbrains-toolbox btop
+installRepoPackages \
+	foot steam gamescope xorg-xwayland \
+	protontricks wine winetricks freecad btop
+installAurPackages vesktop zen-browser-bin visual-studio-code-bin jetbrains-toolbox
 
 configureGithubVault
 configureHermesAgent

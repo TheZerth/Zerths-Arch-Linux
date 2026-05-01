@@ -2,11 +2,17 @@
 
 ## Package Management
 
-### `handleInstall pkg`
-Checks whether `pkg` is already installed (via `paru -Qq`). If not found, installs it silently with `paru -S --noconfirm`. Prints a coloured status line either way.
+### `ensureParuWorks`
+Checks whether `/usr/bin/paru` is present. If not, bootstraps paru by cloning `paru-bin` from the AUR into a temporary directory, building it as `$InstallUser` with `makepkg`, and installing the resulting package with `pacman -U`. Aborts if the install user is root (paru cannot be built as root). Cleans up the build directory on success.
+
+### `installRepoPackages [pkg…]`
+Installs official-repository packages as root via `pacman -S --needed --noconfirm`. Skips packages that are already installed and prints a status line. Use this for any package available in the official Arch repos (`[core]`, `[extra]`, `[multilib]`).
+
+### `installAurPackages [pkg…]`
+Installs AUR packages as the target user via `paru -S --needed --noconfirm --skipreview`. Calls `ensureParuWorks` first, skips already-installed packages, and prints a status line. Aborts if the install user is root.
 
 ### `handleRemove pkg`
-Checks whether `pkg` is installed. If found, removes it and its unneeded dependencies with `paru -Rns --noconfirm`. Continues on failure rather than aborting the script.
+Checks whether `pkg` is installed. If found, removes it and its unneeded dependencies with `pacman -Rns --noconfirm`. Continues on failure rather than aborting the script.
 
 ---
 
