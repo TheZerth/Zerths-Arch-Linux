@@ -29,33 +29,21 @@ Install='\e[33m'
 Fail='\e[31m'
 END='\e[0m'
 
-handleInstall() {
-	local pkg="$1"
-	if ! paru -Qq | grep -qx "$pkg"; then
-		echo -e "$pkg ${Fail}not${END} found, ${Install}installing${END}."
-		paru -S --needed --noconfirm --skipreview "$pkg" || { echo "WARNING: Failed to install $pkg; continuing." >&2; }
+runAsInstallUser() {
+	if [ "$(id -u)" -eq 0 ] && [ "$InstallUser" != "root" ]; then
+		sudo -u "$InstallUser" env HOME="$InstallHome" XDG_RUNTIME_DIR="/run/user/$InstallUid" "$@"
 	else
-		echo -e "$pkg ${Success}installed${END}."
-	fi
-}
-
-handleRemove() {
-	local pkg="$1"
-	if paru -Qq | grep -qx "$pkg"; then
-		echo -e "$pkg ${Install}installed${END}, ${Fail}removing${END}."
-		paru -Rns --noconfirm "$pkg" || echo "Could not remove $pkg; continuing."
-	else
-		echo -e "$pkg ${Success}not installed${END}."
+		"$@"
 	fi
 }
 
 handleInstallMany() {
 	# Install multiple packages in one paru call to leverage parallel downloads.
-	# Already-installed packages are filtered out first.
+	# This script runs as root, but paru/makepkg must run as the target user.
 	local pkgs=()
 	local pkg
 	for pkg in "$@"; do
-		if ! paru -Qq | grep -qx "$pkg"; then
+		if ! pacman -Qq "$pkg" >/dev/null 2>&1; then
 			pkgs+=("$pkg")
 		fi
 	done
@@ -64,14 +52,20 @@ handleInstallMany() {
 		return
 	fi
 	echo -e "Installing: ${Install}${pkgs[*]}${END}"
-	paru -S --needed --noconfirm --skipreview "${pkgs[@]}" || { echo "WARNING: One or more packages failed to install." >&2; }
+	if [ "$InstallUser" = "root" ]; then
+		echo "ERROR: Cannot install AUR/repo package groups as root through paru. Run through sudo from the target user." >&2
+		exit 1
+	fi
+	runAsInstallUser paru -S --needed --noconfirm --skipreview "${pkgs[@]}" || { echo "ERROR: Failed to install package group: ${pkgs[*]}" >&2; exit 1; }
 }
 
-runAsInstallUser() {
-	if [ "$(id -u)" -eq 0 ] && [ "$InstallUser" != "root" ]; then
-		sudo -u "$InstallUser" env HOME="$InstallHome" XDG_RUNTIME_DIR="/run/user/$InstallUid" "$@"
+handleRemove() {
+	local pkg="$1"
+	if pacman -Qq "$pkg" >/dev/null 2>&1; then
+		echo -e "$pkg ${Install}installed${END}, ${Fail}removing${END}."
+		pacman -Rns --noconfirm "$pkg" || echo "Could not remove $pkg; continuing."
 	else
-		"$@"
+		echo -e "$pkg ${Success}not installed${END}."
 	fi
 }
 
@@ -1445,7 +1439,7 @@ handleInstallMany \
 	pipewire lib32-pipewire pipewire-docs wireplumber \
 	pipewire-audio pipewire-alsa pipewire-pulse \
 	pipewire-jack lib32-pipewire-jack alsa-utils
-runAsInstallUser systemctl --user enable pipewire wireplumber pipewire-pulse
+systemctl --global enable pipewire wireplumber pipewire-pulse
 
 echo -e "${Title}Configuring Video${END}"
 handleInstallMany \
@@ -1618,5 +1612,9 @@ else
 fi
 copySshKeysFromUsb
 
+if [ "${ZERTH_NO_REBOOT:-0}" = "1" ]; then
+	echo "Installation complete. ZERTH_NO_REBOOT=1 set; skipping reboot."
+	exit 0
+fi
 read -r -p "Installation complete. Press Enter to reboot."
 reboot
