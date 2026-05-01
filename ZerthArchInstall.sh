@@ -316,7 +316,7 @@ configureManualMonitorLayout() {
 	local primary_scale="${ZERTH_HYPR_PRIMARY_SCALE:-${ZERTH_HYPR_MONITOR_SCALE:-1}}"
 	local portrait_output="${ZERTH_HYPR_PORTRAIT_OUTPUT:-DP-2}"
 	local portrait_mode="${ZERTH_HYPR_PORTRAIT_MODE:-2560x1440@144}"
-	local portrait_position="${ZERTH_HYPR_PORTRAIT_POSITION:-3440x-560}"
+	local portrait_position="${ZERTH_HYPR_PORTRAIT_POSITION:--1440x-560}"
 	local portrait_scale="${ZERTH_HYPR_PORTRAIT_SCALE:-1}"
 	local portrait_transform="${ZERTH_HYPR_PORTRAIT_TRANSFORM:-1}"
 
@@ -328,7 +328,7 @@ configureManualMonitorLayout() {
 		printf '\n# Zerth manual monitor layout start\n'
 		printf '# Manual monitor configuration is intentional; do not fall back to auto.\n'
 		printf '# Primary: Samsung Odyssey G8 ultrawide, HDR, 3440x1440.\n'
-		printf '# Portrait: LG 27GL850, SDR/sRGB, 2560x1440 rotated clockwise into 1440x2560.\n'
+		printf '# Portrait: LG 27GL850, SDR/sRGB, 2560x1440 rotated clockwise into 1440x2560, left of primary.\n'
 		printf '# Override outputs/modes before running if connector names change:\n'
 		printf '# ZERTH_HYPR_PRIMARY_OUTPUT=DP-3 ZERTH_HYPR_PORTRAIT_OUTPUT=DP-2\n'
 		printf 'monitorv2 {\n'
