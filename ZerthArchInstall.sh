@@ -404,6 +404,39 @@ case "$1" in
 	cpu)
 		awk '{printf "CPU %.2f %.2f %.2f\n", $1, $2, $3}' /proc/loadavg
 		;;
+	cpu-pct)
+		awk 'NR==1 {idle1=$5; total1=0; for (i=2; i<=NF; i++) total1+=$i} END {printf "%d\n", 0}' /proc/stat >/dev/null
+		read -r _ user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat
+		total1=$((user + nice + system + idle + iowait + irq + softirq + steal))
+		idle1=$((idle + iowait))
+		sleep 0.2
+		read -r _ user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat
+		total2=$((user + nice + system + idle + iowait + irq + softirq + steal))
+		idle2=$((idle + iowait))
+		dtotal=$((total2 - total1))
+		didle=$((idle2 - idle1))
+		if [ "$dtotal" -gt 0 ]; then
+			printf '%d\n' $(((100 * (dtotal - didle)) / dtotal))
+		else
+			printf '0\n'
+		fi
+		;;
+	mem-pct)
+		free | awk '/^Mem:/ {printf "%d\n", ($3 / $2) * 100}'
+		;;
+	disk-pct)
+		df -P "$HOME" | awk 'NR==2 {gsub(/%/, "", $5); print $5}'
+		;;
+	gpu-pct)
+		if command -v nvidia-smi >/dev/null 2>&1; then
+			nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -n 1
+		else
+			printf '0\n'
+		fi
+		;;
+	top-proc)
+		ps -eo comm=,%cpu= --sort=-%cpu 2>/dev/null | awk 'NF {printf "%s %s%%\n", $1, $2; exit}'
+		;;
 	launch-btop)
 		if command -v hyprctl >/dev/null 2>&1; then
 			hyprctl dispatch exec "foot --app-id zerth-btop --title 'Zerth System' -e btop" >/dev/null 2>&1
@@ -433,6 +466,11 @@ EOF
 (defpoll zerth_workspace :interval "1s" "$status_script workspace")
 (defpoll zerth_memory :interval "3s" "$status_script memory")
 (defpoll zerth_cpu :interval "3s" "$status_script cpu")
+(defpoll zerth_cpu_pct :interval "2s" "$status_script cpu-pct")
+(defpoll zerth_mem_pct :interval "3s" "$status_script mem-pct")
+(defpoll zerth_disk_pct :interval "15s" "$status_script disk-pct")
+(defpoll zerth_gpu_pct :interval "3s" "$status_script gpu-pct")
+(defpoll zerth_top_proc :interval "3s" "$status_script top-proc")
 
 (defwindow zerth_overlay
   :monitor 0
@@ -456,6 +494,35 @@ EOF
     (label :class "console-subtitle" :halign "start" :text subtitle)
     (button :class "console-launch" :halign "start" :onclick command "OPEN")))
 
+(defwidget zerth_metric [name value]
+  (box :class "metric" :orientation "v" :space-evenly false
+    (box :orientation "h" :space-evenly false
+      (label :class "metric-name" :halign "start" :text name)
+      (label :class "metric-value" :halign "end" :text "\${value}%"))
+    (progress :class "metric-bar" :value value :max 100)))
+
+(defwidget zerth_system_panel []
+  (box :class "console-card system-card" :orientation "v" :space-evenly false
+    (label :class "console-title" :halign "start" :text "SYSTEM")
+    (label :class "console-subtitle" :halign "start" :text "native overlay telemetry")
+    (zerth_metric :name "CPU" :value zerth_cpu_pct)
+    (zerth_metric :name "MEM" :value zerth_mem_pct)
+    (zerth_metric :name "GPU" :value zerth_gpu_pct)
+    (zerth_metric :name "DSK" :value zerth_disk_pct)
+    (zerth_readout :label "TOP" :value zerth_top_proc)
+    (button :class "console-launch" :halign "start" :onclick "$status_script launch-btop" "BTOP")))
+
+(defwidget zerth_terminal_panel []
+  (box :class "console-card terminal-card" :orientation "v" :space-evenly false
+    (label :class "console-title" :halign "start" :text "HERMES")
+    (label :class "console-subtitle" :halign "start" :text "terminal-backed agent session")
+    (box :class "terminal-mock" :orientation "v" :space-evenly false
+      (label :class "terminal-line dim" :halign "start" :text "zerth@themantle:~$ hermes --tui")
+      (label :class "terminal-line" :halign "start" :text "memory: vault-backed")
+      (label :class "terminal-line" :halign "start" :text "status: ready")
+      (label :class "terminal-line accent" :halign "start" :text "open interactive terminal →"))
+    (button :class "console-launch" :halign "start" :onclick "$status_script launch-hermes" "OPEN HERMES")))
+
 (defwidget zerth_screen []
   (box :class "screen-dim" :orientation "v" :space-evenly false
     (box :class "stone-panel top-panel" :orientation "h" :space-evenly false
@@ -468,8 +535,8 @@ EOF
       (zerth_readout :label "MEM" :value zerth_memory)
       (zerth_readout :label "SPACE" :value zerth_workspace))
     (box :class "desk" :orientation "h" :space-evenly false
-      (zerth_console_card :title "SYSTEM" :subtitle "btop telemetry / process field" :command "$status_script launch-btop")
-      (zerth_console_card :title "HERMES" :subtitle "agent TUI / local memory interface" :command "$status_script launch-hermes"))
+      (zerth_system_panel)
+      (zerth_terminal_panel))
     (box :class "spacer")
     (box :class "stone-panel control-panel" :orientation "h" :space-evenly false
       (zerth_button :label "-VOL" :command "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-")
@@ -499,7 +566,7 @@ EOF
   padding: 10px 12px;
   background-color: #090812;
   border: 1px solid #6f5cff;
-  box-shadow: inset 0 0 0 1px #1b1730, 0 0 18px rgba(88, 70, 255, 0.20);
+  box-shadow: inset 0 0 0 1px #1b1730, 0 0 7px rgba(126, 102, 255, 0.55);
 }
 
 .top-panel {
@@ -516,7 +583,7 @@ EOF
   padding: 18px;
   background-color: #07060d;
   border: 1px solid #4a3fb0;
-  box-shadow: inset 0 0 0 1px #151224, 0 0 24px rgba(74, 63, 176, 0.22);
+  box-shadow: inset 0 0 0 1px #151224, 0 0 9px rgba(126, 102, 255, 0.50);
 }
 
 .console-title {
@@ -542,6 +609,55 @@ EOF
   color: #ffffff;
   background-color: #241b4a;
   border-color: #c4bbff;
+}
+
+.metric {
+  margin-top: 10px;
+}
+
+.metric-name {
+  min-width: 42px;
+  color: #8f8aa8;
+}
+
+.metric-value {
+  min-width: 44px;
+  color: #e8e4ff;
+}
+
+.metric-bar {
+  margin-top: 4px;
+  min-height: 8px;
+}
+
+.metric-bar trough {
+  background-color: #05040a;
+  border: 1px solid #34304d;
+}
+
+.metric-bar progress {
+  background-color: #8f7dff;
+  box-shadow: 0 0 5px rgba(196, 187, 255, 0.80);
+}
+
+.terminal-mock {
+  margin-top: 14px;
+  padding: 12px;
+  background-color: #030207;
+  border: 1px solid #34304d;
+}
+
+.terminal-line {
+  margin-top: 4px;
+  color: #d8d5e6;
+}
+
+.terminal-line.dim {
+  color: #8f8aa8;
+}
+
+.terminal-line.accent {
+  color: #c4bbff;
 }
 
 .control-panel {
