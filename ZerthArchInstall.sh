@@ -1,4 +1,11 @@
-#! /usr/bin/bash
+#!/usr/bin/bash
+set -euo pipefail
+trap 'echo "ERROR: Script failed at line $LINENO. Command: $BASH_COMMAND" >&2' ERR
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "ERROR: This script must be run as root (./ZerthArchInstall.sh)." >&2
+	exit 1
+fi
 
 PacConfig="/etc/pacman.conf"
 MkinitcpioConfig="/etc/mkinitcpio.conf"
@@ -26,9 +33,9 @@ handleInstall() {
 	local pkg="$1"
 	if ! paru -Qq | grep -qx "$pkg"; then
 		echo -e "$pkg ${Fail}not${END} found, ${Install}installing${END}."
-		paru -S --noconfirm "$pkg"
-	else	
-		echo -e "$pkg" ${Success}installed${END}.
+		paru -S --needed --noconfirm --skipreview "$pkg" || { echo "WARNING: Failed to install $pkg; continuing." >&2; }
+	else
+		echo -e "$pkg ${Success}installed${END}."
 	fi
 }
 
@@ -40,6 +47,24 @@ handleRemove() {
 	else
 		echo -e "$pkg ${Success}not installed${END}."
 	fi
+}
+
+handleInstallMany() {
+	# Install multiple packages in one paru call to leverage parallel downloads.
+	# Already-installed packages are filtered out first.
+	local pkgs=()
+	local pkg
+	for pkg in "$@"; do
+		if ! paru -Qq | grep -qx "$pkg"; then
+			pkgs+=("$pkg")
+		fi
+	done
+	if [ "${#pkgs[@]}" -eq 0 ]; then
+		echo -e "All packages already ${Success}installed${END}."
+		return
+	fi
+	echo -e "Installing: ${Install}${pkgs[*]}${END}"
+	paru -S --needed --noconfirm --skipreview "${pkgs[@]}" || { echo "WARNING: One or more packages failed to install." >&2; }
 }
 
 runAsInstallUser() {
@@ -67,6 +92,27 @@ waitForHyprlandExit() {
 	wait "$pid" 2>/dev/null || true
 }
 
+configureNvidiaKernel() {
+	echo "Configure NVIDIA kernel parameters and suspend services"
+	local modprobe_conf="/etc/modprobe.d/nvidia.conf"
+
+	if [ ! -f "$modprobe_conf" ] || ! grep -q 'modeset=1' "$modprobe_conf"; then
+		cat > "$modprobe_conf" <<'EOF'
+# Hyprland/Wayland requires DRM kernel mode-setting
+options nvidia-drm modeset=1
+# Preserve VRAM allocations across suspend/resume to prevent freeze on wake
+options nvidia NVreg_PreserveVideoMemoryAllocations=1
+EOF
+		echo "Written $modprobe_conf"
+	fi
+
+	echo "Enabling NVIDIA suspend/resume/hibernate services"
+	systemctl enable nvidia-suspend.service \
+	                nvidia-resume.service \
+	                nvidia-hibernate.service || \
+		echo "WARNING: One or more NVIDIA power services not found; they may appear after reboot." >&2
+}
+
 configureNvidiaInitramfs() {
 	local current_modules
 	local modules_text
@@ -74,7 +120,7 @@ configureNvidiaInitramfs() {
 	local nvidia_modules=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
 
 	echo "Configure NVIDIA modules in mkinitcpio"
-	sudo touch "$MkinitcpioConfig"
+	touch "$MkinitcpioConfig"
 	current_modules="$(grep -E '^\s*MODULES=' "$MkinitcpioConfig" | head -n 1)"
 
 	if [ -n "$current_modules" ]; then
@@ -91,12 +137,12 @@ configureNvidiaInitramfs() {
 
 	modules_text="$(printf '%s\n' "$modules_text" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]+/ /g')"
 	if grep -qE '^\s*MODULES=' "$MkinitcpioConfig"; then
-		sudo sed -i -E "0,/^[[:space:]]*MODULES=/{s|^[[:space:]]*MODULES=.*|MODULES=($modules_text)|}" "$MkinitcpioConfig"
+		sed -i -E "0,/^[[:space:]]*MODULES=/{s|^[[:space:]]*MODULES=.*|MODULES=($modules_text)|}" "$MkinitcpioConfig"
 	else
-		echo "MODULES=($modules_text)" | sudo tee -a "$MkinitcpioConfig" >/dev/null
+		echo "MODULES=($modules_text)" | tee -a "$MkinitcpioConfig" >/dev/null
 	fi
 
-	sudo mkinitcpio -P
+	mkinitcpio -P
 }
 
 setNvidiaPersistenceMode() {
@@ -106,13 +152,21 @@ setNvidiaPersistenceMode() {
 		return
 	fi
 
-	timeout 10s sudo nvidia-smi -pm 1 || echo "Skipping NVIDIA persistence mode; the driver may need a reboot."
+	timeout 10s nvidia-smi -pm 1 || echo "Skipping NVIDIA persistence mode; the driver may need a reboot."
 }
 
 setNvidiaPowerMizerMode() {
+	# NOTE: nvidia-settings requires a running display (X or Wayland).
+	# This function is only callable from within an active graphical session.
+	# Use setNvidiaPowerMizerModeInHyprland for post-install headless dispatch,
+	# or setNvidiaPersistenceMode (nvidia-smi) for headless power state control.
 	echo "Set NVIDIA PowerMizer max performance mode"
 	if ! command -v nvidia-settings >/dev/null 2>&1; then
 		echo "nvidia-settings not found; skipping NVIDIA PowerMizer mode."
+		return
+	fi
+	if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+		echo "No display session detected; skipping NVIDIA PowerMizer mode (needs active display)."
 		return
 	fi
 
@@ -134,29 +188,45 @@ setNvidiaPowerMizerModeInHyprland() {
 }
 
 copySshKeysFromUsb() {
-	local usb_device="/dev/sda1"
+	local usb_device
 	local mount_point="/tmp/zerth-ssh-usb"
-	local source_ssh="$mount_point/.ssh"
+	local source_ssh
 	local target_ssh="$InstallHome/.ssh"
 
 	echo -e "${Title}Copying SSH Keys${END}"
-	read -r -p "Please plug in the USB device containing .ssh on /dev/sda1, then press Enter to continue."
 
-	sudo mkdir -p "$mount_point"
-	if ! sudo mount "$usb_device" "$mount_point"; then
+	# Auto-detect the first removable partition (USB drive)
+	usb_device="$(lsblk -rno NAME,RM,TYPE | awk '$2=="1" && $3=="part" {print "/dev/" $1; exit}')"
+
+	if [ -z "$usb_device" ]; then
+		echo "No removable partition auto-detected."
+		read -r -p "Enter the USB device partition (e.g. /dev/sdb1), or press Enter to skip: " usb_device
+		if [ -z "$usb_device" ]; then
+			echo "Skipping SSH key copy."
+			return
+		fi
+	else
+		echo "Detected USB device: $usb_device"
+		read -r -p "Press Enter to mount $usb_device and copy .ssh, or Ctrl+C to abort."
+	fi
+
+	source_ssh="$mount_point/.ssh"
+
+	mkdir -p "$mount_point"
+	if ! mount "$usb_device" "$mount_point"; then
 		echo "Could not mount $usb_device; skipping SSH key copy."
-		sudo rmdir "$mount_point"
+		rmdir "$mount_point"
 		return
 	fi
 
 	if [ -d "$source_ssh" ]; then
-		sudo mkdir -p "$target_ssh"
-		if sudo cp -a "$source_ssh/." "$target_ssh/"; then
-			sudo chmod 700 "$target_ssh"
-			sudo find "$target_ssh" -type d -exec chmod 700 {} +
-			sudo find "$target_ssh" -type f -exec chmod 600 {} +
+		mkdir -p "$target_ssh"
+		if cp -a "$source_ssh/." "$target_ssh/"; then
+			chmod 700 "$target_ssh"
+			find "$target_ssh" -type d -exec chmod 700 {} +
+			find "$target_ssh" -type f -exec chmod 600 {} +
 			if [ "$InstallUser" != "root" ]; then
-				sudo chown -R "$InstallUser:$InstallGroup" "$target_ssh"
+				chown -R "$InstallUser:$InstallGroup" "$target_ssh"
 			fi
 			echo "SSH keys copied to $target_ssh."
 		else
@@ -166,8 +236,8 @@ copySshKeysFromUsb() {
 		echo "No .ssh folder found at the root of $usb_device; skipping SSH key copy."
 	fi
 
-	sudo umount "$mount_point"
-	sudo rmdir "$mount_point"
+	umount "$mount_point"
+	rmdir "$mount_point"
 }
 
 ensureHyprLine() {
@@ -279,7 +349,7 @@ configureHyprpaperConfig() {
 	fi
 
 	if [ "$InstallUser" != "root" ]; then
-		sudo chown "$InstallUser:$InstallGroup" "$config" "$InstallHome/Pictures"
+		chown "$InstallUser:$InstallGroup" "$config" "$InstallHome/Pictures"
 	fi
 }
 
@@ -459,8 +529,497 @@ EOF
 EOF
 
 	if [ "$InstallUser" != "root" ]; then
-		sudo chown -R "$InstallUser:$InstallGroup" "$config_dir"
+		chown -R "$InstallUser:$InstallGroup" "$config_dir"
 	fi
+}
+
+configureHypridleConfig() {
+	local config="$InstallHome/.config/hypr/hypridle.conf"
+
+	echo "Configure Hypridle"
+	mkdir -p "$InstallHome/.config/hypr"
+	if [ ! -f "$config" ]; then
+		cat > "$config" <<'EOF'
+general {
+    lock_cmd = pidof hyprlock || hyprlock
+    before_sleep_cmd = loginctl lock-session
+    after_sleep_cmd = hyprctl dispatch dpms on
+}
+
+listener {
+    timeout = 300
+    on-timeout = loginctl lock-session
+}
+
+listener {
+    timeout = 360
+    on-timeout = hyprctl dispatch dpms off
+    on-resume = hyprctl dispatch dpms on
+}
+
+listener {
+    timeout = 1800
+    on-timeout = systemctl suspend
+}
+EOF
+		echo "Written $config"
+	fi
+	if [ "$InstallUser" != "root" ]; then
+		chown "$InstallUser:$InstallGroup" "$config"
+	fi
+}
+
+configureHyprlockConfig() {
+	local config="$InstallHome/.config/hypr/hyprlock.conf"
+
+	echo "Configure Hyprlock"
+	mkdir -p "$InstallHome/.config/hypr"
+	if [ ! -f "$config" ]; then
+		cat > "$config" <<'EOF'
+general {
+    hide_cursor = true
+    no_fade_in = true
+    no_fade_out = true
+}
+
+background {
+    monitor =
+    color = rgba(050408ff)
+}
+
+input-field {
+    monitor =
+    size = 300, 40
+    position = 0, -80
+    halign = center
+    valign = center
+    outline_thickness = 1
+    outer_color = rgba(7b7684ff)
+    inner_color = rgba(111016ff)
+    font_color = rgba(e4e0e8ff)
+    check_color = rgba(c8c8d0ff)
+    fail_color = rgba(cc3333ff)
+    placeholder_text = <span foreground="##918999">passphrase</span>
+    hide_input = false
+}
+
+label {
+    monitor =
+    text = cmd[update:1000] echo "$TIME"
+    color = rgba(d5d0d8ff)
+    font_size = 16
+    font_family = ProggyClean, Terminus, monospace
+    position = 0, 80
+    halign = center
+    valign = center
+}
+EOF
+		echo "Written $config"
+	fi
+	if [ "$InstallUser" != "root" ]; then
+		chown "$InstallUser:$InstallGroup" "$config"
+	fi
+}
+
+configureGithubVault() {
+	local github_user="${ZERTH_GITHUB_USER:-TheZerth}"
+	local vault_name="${ZERTH_VAULT_REPO:-vault}"
+	local vault_dir="${ZERTH_VAULT_DIR:-$InstallHome/vault}"
+	local vault_https="https://github.com/$github_user/$vault_name.git"
+	local vault_ssh="git@github.com:$github_user/$vault_name.git"
+	local bin_dir="$InstallHome/.local/bin"
+	local config_dir="$InstallHome/.config"
+	local backup_conf="$config_dir/vault-backup.conf"
+	local backup_script="$bin_dir/vault-backup"
+	local seal_ssh_script="$bin_dir/vault-seal-ssh"
+	local service_unit="/etc/systemd/system/vault-backup@.service"
+	local timer_unit="/etc/systemd/system/vault-backup@.timer"
+	local escaped_timer
+	local answer
+
+	echo -e "${Title}Configuring GitHub Vault${END}"
+	if [ "$InstallUser" = "root" ]; then
+		echo "Skipping GitHub vault setup because no non-root install user was detected."
+		return
+	fi
+
+	mkdir -p "$bin_dir" "$config_dir"
+
+	cat > "$backup_conf" <<EOF
+# GitHub vault backup settings.
+# Repo defaults to: $vault_https
+VAULT_DIR="$vault_dir"
+VAULT_REMOTE_HTTPS="$vault_https"
+VAULT_REMOTE_SSH="$vault_ssh"
+
+# Optional: set to an age public recipient for non-interactive encrypted archives.
+# Generate one with: age-keygen -o ~/.config/vault-age-identity.txt
+# Then copy the public key printed by age-keygen here.
+# VAULT_AGE_RECIPIENT="age1..."
+
+# Add small important paths here, one per line. Environment variables are expanded.
+VAULT_INCLUDE_FILE="$InstallHome/.config/vault-backup-paths"
+EOF
+
+	if [ ! -f "$InstallHome/.config/vault-backup-paths" ]; then
+		cat > "$InstallHome/.config/vault-backup-paths" <<'EOF'
+# One path per line. Blank lines and # comments are ignored.
+# Examples:
+# $HOME/Documents/Obsidian
+# $HOME/.local/share/Steam/userdata/YOUR_STEAM_ID/APP_ID
+EOF
+	fi
+
+	cat > "$backup_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+Conf="$HOME/.config/vault-backup.conf"
+if [ -f "$Conf" ]; then
+	# shellcheck disable=SC1090
+	. "$Conf"
+fi
+
+VaultDir="${VAULT_DIR:-$HOME/vault}"
+IncludeFile="${VAULT_INCLUDE_FILE:-$HOME/.config/vault-backup-paths}"
+Timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+Host="$(hostname 2>/dev/null || printf unknown)"
+
+if [ ! -d "$VaultDir/.git" ]; then
+	echo "Vault repo not found at $VaultDir" >&2
+	exit 1
+fi
+
+mkdir -p "$VaultDir/backups/hermes" "$VaultDir/backups/files" "$VaultDir/secrets"
+
+if [ -f "$IncludeFile" ]; then
+	while IFS= read -r raw_path || [ -n "$raw_path" ]; do
+		case "$raw_path" in
+			''|'#'*) continue ;;
+		esac
+		expanded_path="$(eval "printf '%s' \"$raw_path\"")"
+		if [ ! -e "$expanded_path" ]; then
+			echo "Skipping missing path: $expanded_path"
+			continue
+		fi
+		name="$(printf '%s' "$expanded_path" | sed "s|^$HOME|HOME|; s|^/||; s|/|__|g")"
+		archive="$VaultDir/backups/files/${Host}-${name}-${Timestamp}.tar.gz"
+		tar -C "$(dirname "$expanded_path")" -czf "$archive" "$(basename "$expanded_path")"
+		if [ -n "${VAULT_AGE_RECIPIENT:-}" ]; then
+			age -r "$VAULT_AGE_RECIPIENT" -o "$archive.age" "$archive"
+			rm -f "$archive"
+		fi
+	done < "$IncludeFile"
+fi
+
+cd "$VaultDir"
+git pull --rebase --autostash || true
+git add -A
+if git diff --cached --quiet; then
+	echo "No vault changes to back up."
+	exit 0
+fi
+git commit -m "vault backup $Timestamp"
+git push
+EOF
+	chmod 755 "$backup_script"
+
+	cat > "$seal_ssh_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+VaultDir="${VAULT_DIR:-$HOME/vault}"
+SecretOut="$VaultDir/secrets/ssh.tar.age"
+mkdir -p "$VaultDir/secrets"
+if [ ! -d "$HOME/.ssh" ]; then
+	echo "No ~/.ssh directory found." >&2
+	exit 1
+fi
+printf 'This will encrypt selected SSH files into %s\n' "$SecretOut"
+printf 'Use a strong passphrase. You will need it on fresh installs.\n'
+files=()
+for f in id_ed25519 id_ed25519.pub config known_hosts; do
+	[ -e "$HOME/.ssh/$f" ] && files+=("$f")
+done
+if [ "${#files[@]}" -eq 0 ]; then
+	echo "No supported SSH files found to seal." >&2
+	exit 1
+fi
+tar -C "$HOME/.ssh" -cf - "${files[@]}" | age -p -o "$SecretOut"
+chmod 600 "$SecretOut"
+cd "$VaultDir"
+git add "$SecretOut"
+git commit -m "update encrypted ssh secret" || true
+git push
+EOF
+	chmod 755 "$seal_ssh_script"
+	chown -R "$InstallUser:$InstallGroup" "$bin_dir" "$config_dir"
+
+	cat > "$service_unit" <<'EOF'
+[Unit]
+Description=Push small-file backups to GitHub vault for %i
+Documentation=man:systemd.service(5)
+
+[Service]
+Type=oneshot
+User=%i
+ExecStart=%h/.local/bin/vault-backup
+EOF
+
+	cat > "$timer_unit" <<'EOF'
+[Unit]
+Description=Daily GitHub vault backup for %i
+Documentation=man:systemd.timer(5)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=45m
+Unit=vault-backup@%i.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+	if ! runAsInstallUser gh auth status >/dev/null 2>&1; then
+		echo "GitHub CLI is not authenticated for $InstallUser."
+		read -r -p "Run 'gh auth login' now? This needs your GitHub login and 2FA. [y/N]: " answer
+		case "$answer" in
+			[Yy]*) runAsInstallUser gh auth login ;;
+			*) echo "Skipping GitHub login. Vault scripts were still installed." ;;
+		esac
+	fi
+	if runAsInstallUser gh auth status >/dev/null 2>&1; then
+		runAsInstallUser gh auth setup-git || true
+	fi
+
+	if [ ! -d "$vault_dir/.git" ] && runAsInstallUser gh auth status >/dev/null 2>&1; then
+		if runAsInstallUser gh repo view "$github_user/$vault_name" >/dev/null 2>&1; then
+			runAsInstallUser git clone "$vault_https" "$vault_dir" || true
+		else
+			echo "GitHub repo $github_user/$vault_name does not exist or is not visible."
+			read -r -p "Create private repo $github_user/$vault_name now? [y/N]: " answer
+			case "$answer" in
+				[Yy]*) runAsInstallUser gh repo create "$github_user/$vault_name" --private && runAsInstallUser git clone "$vault_https" "$vault_dir" ;;
+				*) echo "Skipping vault repo creation/clone." ;;
+			esac
+		fi
+	fi
+
+	if [ -d "$vault_dir/.git" ]; then
+		mkdir -p "$vault_dir/backups/hermes" "$vault_dir/backups/files" "$vault_dir/secrets"
+		chown -R "$InstallUser:$InstallGroup" "$vault_dir"
+		if [ -f "$vault_dir/secrets/ssh.tar.age" ] && [ ! -f "$InstallHome/.ssh/id_ed25519" ]; then
+			read -r -p "Encrypted SSH secret found in vault. Restore it now? [y/N]: " answer
+			case "$answer" in
+				[Yy]*)
+					mkdir -p "$InstallHome/.ssh"
+					chown "$InstallUser:$InstallGroup" "$InstallHome/.ssh"
+					runAsInstallUser sh -lc 'age -d "$HOME/vault/secrets/ssh.tar.age" | tar -C "$HOME/.ssh" -xf -'
+					chmod 700 "$InstallHome/.ssh"
+					find "$InstallHome/.ssh" -type f -name 'id_*' ! -name '*.pub' -exec chmod 600 {} +
+					find "$InstallHome/.ssh" -type f -name '*.pub' -exec chmod 644 {} +
+					[ -f "$InstallHome/.ssh/config" ] && chmod 600 "$InstallHome/.ssh/config"
+					chown -R "$InstallUser:$InstallGroup" "$InstallHome/.ssh"
+					# Keep the vault remote on HTTPS so gh-managed credentials can push
+					# non-interactively. SSH remains available for manual git use after restore.
+					;;
+				*) echo "Skipping SSH restore." ;;
+			esac
+		fi
+	fi
+
+	systemctl daemon-reload
+	escaped_timer="$(systemd-escape --template=vault-backup@.timer "$InstallUser")"
+	systemctl enable --now "$escaped_timer" || echo "WARNING: Could not enable vault backup timer; run: systemctl enable --now $escaped_timer" >&2
+}
+
+configureHermesAgent() {
+	local fish_conf_dir="$InstallHome/.config/fish/conf.d"
+	local fish_path_conf="$fish_conf_dir/10-local-bin.fish"
+	local profile="$InstallHome/.profile"
+	local hermes_bin="$InstallHome/.local/bin/hermes"
+	local hermes_vault_dir="$InstallHome/vault/backups/hermes"
+	local latest_backup
+	local restore_answer
+	local tmp_restore
+
+	echo -e "${Title}Configuring Hermes Agent${END}"
+	if [ "$InstallUser" = "root" ]; then
+		echo "Skipping Hermes user setup because no non-root install user was detected."
+		return
+	fi
+
+	mkdir -p "$InstallHome/.local/bin" "$fish_conf_dir"
+	if [ ! -f "$fish_path_conf" ] || ! grep -q 'fish_add_path.*\.local/bin' "$fish_path_conf"; then
+		cat > "$fish_path_conf" <<'EOF'
+# Keep user-installed CLI tools available, including Hermes installed by uv.
+fish_add_path -m ~/.local/bin
+EOF
+	fi
+	if [ ! -f "$profile" ] || ! grep -q 'HOME/.local/bin' "$profile"; then
+		cat >> "$profile" <<'EOF'
+
+# User-installed CLI tools, including Hermes installed by uv.
+case ":$PATH:" in
+	*:"$HOME/.local/bin":*) ;;
+	*) PATH="$HOME/.local/bin:$PATH" ;;
+esac
+export PATH
+EOF
+	fi
+	chown -R "$InstallUser:$InstallGroup" "$InstallHome/.local" "$InstallHome/.config/fish" "$profile"
+
+	if ! command -v uv >/dev/null 2>&1; then
+		echo "uv not found; skipping Hermes install."
+		return
+	fi
+
+	if runAsInstallUser sh -lc 'uv tool install --upgrade hermes-agent'; then
+		echo "Hermes Agent installed for $InstallUser."
+	else
+		echo "WARNING: Hermes Agent install failed; continuing." >&2
+		return
+	fi
+
+	if [ -x "$hermes_bin" ]; then
+		runAsInstallUser sh -lc 'export PATH="$HOME/.local/bin:$PATH"; hermes setup --non-interactive || true'
+		runAsInstallUser sh -lc 'export PATH="$HOME/.local/bin:$PATH"; hermes doctor || true'
+		if [ -d "$hermes_vault_dir" ]; then
+			latest_backup="$(ls -t "$hermes_vault_dir"/hermes-*.zip "$hermes_vault_dir"/hermes-*.zip.age 2>/dev/null | head -n 1 || true)"
+			if [ -n "$latest_backup" ]; then
+				read -r -p "Hermes backup found in vault ($(basename "$latest_backup")). Import it now? [y/N]: " restore_answer
+				case "$restore_answer" in
+					[Yy]*)
+						if printf '%s\n' "$latest_backup" | grep -q '\.age$'; then
+							tmp_restore="$InstallHome/.cache/hermes-restore.zip"
+							rm -f "$tmp_restore"
+							if [ -f "$InstallHome/.config/vault-age-identity.txt" ]; then
+								runAsInstallUser age -d -i "$InstallHome/.config/vault-age-identity.txt" -o "$tmp_restore" "$latest_backup"
+							else
+								runAsInstallUser age -d -o "$tmp_restore" "$latest_backup"
+							fi
+							runAsInstallUser sh -lc "export PATH=\"\$HOME/.local/bin:\$PATH\"; hermes import '$tmp_restore' --force"
+							rm -f "$tmp_restore"
+						else
+							runAsInstallUser sh -lc "export PATH=\"\$HOME/.local/bin:\$PATH\"; hermes import '$latest_backup' --force"
+						fi
+						;;
+					*) echo "Skipping Hermes restore." ;;
+				esac
+			fi
+		fi
+	else
+		echo "WARNING: Hermes executable not found at $hermes_bin after install." >&2
+	fi
+}
+
+configureHermesBackup() {
+	local bin_dir="$InstallHome/.local/bin"
+	local backup_script="$bin_dir/hermes-backup"
+	local env_file="$InstallHome/.config/hermes-backup.env"
+	local service_unit="/etc/systemd/system/hermes-backup@.service"
+	local timer_unit="/etc/systemd/system/hermes-backup@.timer"
+	local escaped_timer
+
+	echo -e "${Title}Configuring Hermes Backup${END}"
+	if [ "$InstallUser" = "root" ]; then
+		echo "Skipping Hermes backup setup because no non-root install user was detected."
+		return
+	fi
+
+	mkdir -p "$bin_dir" "$InstallHome/.config" "$InstallHome/.local/share/hermes-backups"
+	cat > "$backup_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+EnvFile="$HOME/.config/hermes-backup.env"
+if [ -f "$HOME/.config/vault-backup.conf" ]; then
+	# shellcheck disable=SC1090
+	. "$HOME/.config/vault-backup.conf"
+fi
+if [ -f "$EnvFile" ]; then
+	# shellcheck disable=SC1090
+	. "$EnvFile"
+fi
+
+HermesBin="${HERMES_BIN:-}"
+if [ -z "$HermesBin" ]; then
+	if command -v hermes >/dev/null 2>&1; then
+		HermesBin="$(command -v hermes)"
+	elif [ -x "$HOME/.local/bin/hermes" ]; then
+		HermesBin="$HOME/.local/bin/hermes"
+	else
+		echo "hermes not found; cannot create backup." >&2
+		exit 1
+	fi
+fi
+
+BackupDir="${HERMES_BACKUP_DIR:-$HOME/.local/share/hermes-backups}"
+ExtraDir="${HERMES_BACKUP_EXTRA_DIR:-}"
+Timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+BackupFile="$BackupDir/hermes-full-$Timestamp.zip"
+
+mkdir -p "$BackupDir"
+"$HermesBin" backup -o "$BackupFile"
+find "$BackupDir" -maxdepth 1 -type f -name 'hermes-*.zip' -mtime +30 -delete
+
+if [ -n "$ExtraDir" ]; then
+	mkdir -p "$ExtraDir"
+	if [ -n "${VAULT_AGE_RECIPIENT:-}" ]; then
+		age -r "$VAULT_AGE_RECIPIENT" -o "$ExtraDir/$(basename "$BackupFile").age" "$BackupFile"
+	else
+		cp -f "$BackupFile" "$ExtraDir/"
+	fi
+	find "$ExtraDir" -maxdepth 1 -type f \( -name 'hermes-*.zip' -o -name 'hermes-*.zip.age' \) -mtime +90 -delete
+fi
+
+printf 'Hermes backup written: %s\n' "$BackupFile"
+EOF
+	chmod 755 "$backup_script"
+
+	if [ ! -f "$env_file" ]; then
+		cat > "$env_file" <<'EOF'
+# Hermes backup settings.
+# Local snapshots stay on this machine. If ~/vault exists, the installer also
+# copies/encrypts Hermes snapshots into ~/vault/backups/hermes for GitHub sync.
+HERMES_BACKUP_DIR="$HOME/.local/share/hermes-backups"
+HERMES_BACKUP_EXTRA_DIR="${VAULT_DIR:-$HOME/vault}/backups/hermes"
+EOF
+	fi
+	chown -R "$InstallUser:$InstallGroup" "$bin_dir" "$InstallHome/.config" "$InstallHome/.local/share/hermes-backups"
+
+	cat > "$service_unit" <<'EOF'
+[Unit]
+Description=Back up Hermes Agent state for %i
+Documentation=man:systemd.service(5)
+
+[Service]
+Type=oneshot
+User=%i
+ExecStart=%h/.local/bin/hermes-backup
+EOF
+
+	cat > "$timer_unit" <<'EOF'
+[Unit]
+Description=Daily Hermes Agent backup for %i
+Documentation=man:systemd.timer(5)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+Unit=hermes-backup@%i.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+	systemctl daemon-reload
+	escaped_timer="$(systemd-escape --template=hermes-backup@.timer "$InstallUser")"
+	systemctl enable --now "$escaped_timer" || echo "WARNING: Could not enable Hermes backup timer; run: systemctl enable --now $escaped_timer" >&2
+
+	# Make an initial backup if Hermes is already usable; do not fail the install if credentials/setup are incomplete.
+	runAsInstallUser sh -lc 'export PATH="$HOME/.local/bin:$PATH"; "$HOME/.local/bin/hermes-backup" || true'
 }
 
 configureHyprlandConfig() {
@@ -528,6 +1087,7 @@ configureHyprlandConfig() {
 	ensureHyprLine 'exec-once = systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP' "$config"
 	ensureHyprLine 'exec-once = systemctl --user start hyprpolkitagent' "$config"
 	ensureHyprLine 'exec-once = systemctl --user start xdg-desktop-portal xdg-desktop-portal-hyprland' "$config"
+	ensureHyprLine 'exec-once = hypridle' "$config"
 	ensureHyprLine 'exec-once = dunst' "$config"
 	ensureHyprLine 'exec-once = hyprpaper' "$config"
 	sed -i -E '/^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*ashell[[:space:]]*$/d' "$config"
@@ -535,7 +1095,8 @@ configureHyprlandConfig() {
 	ensureHyprLine 'exec-once = udiskie --tray' "$config"
 	ensureHyprLine 'exec-once = wl-paste --type text --watch cliphist store' "$config"
 	ensureHyprLine 'exec-once = wl-paste --type image --watch cliphist store' "$config"
-	sed -i -E "/^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*sh -c 'command -v monique >\/dev\/null 2>&1 && monique'[[:space:]]*$/d" "$config"
+	sed -i -E "/^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*sh -c 'command -v monique >\\/dev\\/null 2>&1 && monique'[[:space:]]*$/d" "$config"
+	ensureHyprLine "exec-once = sh -c 'command -v monique >/dev/null 2>&1 && monique'" "$config"
 
 	ensureHyprLine 'bind = $mainMod SHIFT, V, exec, cliphist list | fuzzel --dmenu | cliphist decode | wl-copy' "$config"
 	ensureHyprLine 'bind = $mainMod, M, exec, command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch exit' "$config"
@@ -543,9 +1104,34 @@ configureHyprlandConfig() {
 	ensureHyprLine 'bind = $mainMod, R, exec, $menu' "$config"
 	ensureHyprLine 'bind = $mainMod, T, exec, eww open zerth_overlay' "$config"
 	ensureHyprLine 'bindr = $mainMod, T, exec, eww close zerth_overlay' "$config"
+	ensureHyprLine 'bind = $mainMod, L, exec, hyprlock' "$config"
+	ensureHyprLine 'bind = , Print, exec, grim - | wl-copy' "$config"
+	ensureHyprLine 'bind = SHIFT, Print, exec, grim -g "$(slurp)" - | wl-copy' "$config"
+
+	# Workspace switch (Super+1-9)
+	local i
+	for i in $(seq 1 9); do
+		ensureHyprLine "bind = \$mainMod, $i, workspace, $i" "$config"
+		ensureHyprLine "bind = \$mainMod SHIFT, $i, movetoworkspace, $i" "$config"
+	done
+
+	# Window management
+	ensureHyprLine 'bind = $mainMod, Q, killactive' "$config"
+	ensureHyprLine 'bind = $mainMod, F, fullscreen, 0' "$config"
+	ensureHyprLine 'bind = $mainMod SHIFT, F, togglefloating' "$config"
+	ensureHyprLine 'bind = $mainMod, left, movefocus, l' "$config"
+	ensureHyprLine 'bind = $mainMod, right, movefocus, r' "$config"
+	ensureHyprLine 'bind = $mainMod, up, movefocus, u' "$config"
+	ensureHyprLine 'bind = $mainMod, down, movefocus, d' "$config"
+	ensureHyprLine 'bind = $mainMod SHIFT, left, movewindow, l' "$config"
+	ensureHyprLine 'bind = $mainMod SHIFT, right, movewindow, r' "$config"
+	ensureHyprLine 'bind = $mainMod SHIFT, up, movewindow, u' "$config"
+	ensureHyprLine 'bind = $mainMod SHIFT, down, movewindow, d' "$config"
+	ensureHyprLine 'bindm = $mainMod, mouse:272, movewindow' "$config"
+	ensureHyprLine 'bindm = $mainMod, mouse:273, resizewindow' "$config"
 
 	if [ "$InstallUser" != "root" ]; then
-		sudo chown "$InstallUser:$InstallGroup" "$config"
+		chown "$InstallUser:$InstallGroup" "$config"
 	fi
 }
 
@@ -555,132 +1141,137 @@ echo -e "System ${Install}installation${END} will begin..."
 
 echo "Configuring Pacman."
 if ! grep -qE '^\s*Color\b' "$PacConfig"; then
-echo "Enabling Color in Pacman."
-	sudo sed -i 's/^\s*#\s*Color\b/Color/' "$PacConfig"
+	echo "Enabling Color in Pacman."
+	sed -i 's/^\s*#\s*Color\b/Color/' "$PacConfig"
 	if ! grep -qE '^\s*Color\b' "$PacConfig"; then
-		echo "Color" | sudo tee -a "$PacConfig" >/dev/null
+		echo "Color" | tee -a "$PacConfig" >/dev/null
 	fi
 fi
 
+if ! grep -qE '^\s*ParallelDownloads\s*=' "$PacConfig"; then
+	echo "Enabling ParallelDownloads in Pacman."
+	sed -i '/^\s*Color\b/a ParallelDownloads = 5' "$PacConfig"
+fi
+
+if ! grep -qE '^\s*\[multilib\]' "$PacConfig"; then
+	echo "Enabling multilib repo."
+	printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> "$PacConfig"
+fi
+
+
+echo -e "${Title}Configuring System Identity${END}"
+echo "Setting hostname to themantle."
+hostnamectl set-hostname themantle
+echo "themantle" > /etc/hostname
+if ! grep -q 'themantle' /etc/hosts; then
+	printf '127.0.0.1\tlocalhost\n::1\t\tlocalhost\n127.0.1.1\tthemantle.localdomain\tthemantle\n' > /etc/hosts
+fi
+
+echo "Setting timezone to America/Toronto."
+ln -sf /usr/share/zoneinfo/America/Toronto /etc/localtime
+hwclock --systohc
+
+echo "Generating en_CA.UTF-8 locale."
+if ! grep -qE '^en_CA\.UTF-8 UTF-8' /etc/locale.gen; then
+	sed -i 's/^#\s*en_CA\.UTF-8 UTF-8/en_CA.UTF-8 UTF-8/' /etc/locale.gen
+	if ! grep -qE '^en_CA\.UTF-8 UTF-8' /etc/locale.gen; then
+		echo 'en_CA.UTF-8 UTF-8' >> /etc/locale.gen
+	fi
+fi
+locale-gen
+if [ ! -f /etc/locale.conf ] || ! grep -q 'LANG=en_CA.UTF-8' /etc/locale.conf; then
+	echo 'LANG=en_CA.UTF-8' > /etc/locale.conf
+fi
 
 echo -e "${Title}Updating System.${END}"
-sudo pacman -Syu
+echo "Installing reflector and updating mirrorlist for Canada."
+pacman -S --needed --noconfirm reflector
+reflector --country Canada --latest 10 --sort rate --save /etc/pacman.d/mirrorlist
+pacman -Syu --noconfirm
 echo "Adding development packages."
-sudo pacman -S --needed base-devel
+pacman -S --needed --noconfirm base-devel
 echo "Acquiring Git"
 if ! command -v git >/dev/null 2>&1; then
 	echo -e "Git ${Fail}not${END} found, ${Install}installing${END}."
-	sudo pacman -S git
+	pacman -S --noconfirm git
 else
 	echo -e "Git ${Success}installed${END}."
 fi
-git config --global user.email "drkainaan@icloud.com"
-git config --global user.name "TheZerth"
+runAsInstallUser git config --global user.email "drkainaan@icloud.com"
+runAsInstallUser git config --global user.name "TheZerth"
 
-echo -e "#${Title}Acquiring Paru${END}"
+echo -e "${Title}Acquiring Paru${END}"
 if [ ! -x /usr/bin/paru ]; then
 	echo -e "Paru ${Fail}not${END} found, ${Install}installing${END}."
-	cd
-	git clone "https://aur.archlinux.org/paru.git"
-	cd paru
-	makepkg -si
+	if [ "$InstallUser" = "root" ]; then
+		echo "ERROR: Cannot build paru as root. Run this script through sudo from the target user." >&2
+		exit 1
+	fi
+	ParuBuildDir="$InstallHome/.cache/paru-bin-build"
+	rm -rf "$ParuBuildDir"
+	mkdir -p "$InstallHome/.cache"
+	chown "$InstallUser:$InstallGroup" "$InstallHome/.cache"
+	runAsInstallUser git clone "https://aur.archlinux.org/paru-bin.git" "$ParuBuildDir"
+	runAsInstallUser sh -lc 'cd "$HOME/.cache/paru-bin-build" && makepkg --noconfirm'
+	ParuPackages=("$ParuBuildDir"/*.pkg.tar.zst)
+	pacman -U --noconfirm "${ParuPackages[@]}" || { echo "ERROR: Failed to install paru package. Aborting." >&2; exit 1; }
+	rm -rf "$ParuBuildDir"
 else
 	echo -e "Paru ${Success}installed${END}."
 fi
-handleInstall bat
-
-
 echo -e "${Title}Acquiring Base Packages${END}"
-handleInstall linux-zen-headers
-handleInstall amd-ucode
-handleInstall tuned
-handleInstall sof-firmware
-handleInstall linux-firmware-marvell
-handleInstall man-db
-handleInstall man-pages
-handleInstall texinfo
-handleInstall nano
-handleInstall neovim
-handleInstall fish
-handleInstall python
-handleInstall networkmanager
-handleInstall bluez
-handleInstall bluez-utils
-handleInstall cmake
-handleInstall ninja
-handleInstall clang
+handleInstallMany \
+	linux-zen-headers amd-ucode tuned sof-firmware linux-firmware-marvell \
+	man-db man-pages texinfo nano neovim fish python openssh uv \
+	github-cli age rsync \
+	networkmanager bluez bluez-utils cmake ninja clang \
+	pacman-contrib zram-generator nftables bat
 
 echo -e "${Title}Configuring Terminal${END}"
 cd "$InstallHome"
 if [ ! -d "$InstallHome/proggyfonts" ]; then
-	git clone "https://www.github.com/bluescan/proggyfonts.git" "$InstallHome/proggyfonts"
+	git clone "https://github.com/bluescan/proggyfonts.git" "$InstallHome/proggyfonts"
+	if [ "$InstallUser" != "root" ]; then
+		chown -R "$InstallUser:$InstallGroup" "$InstallHome/proggyfonts"
+	fi
 else
 	echo -e "ProggyFonts ${Success}installed${END}."
 fi
-handleInstall terminus-font
-handleInstall fontconfig
-sudo setfont ter-714n
-sudo touch /etc/vconsole.conf
-if sudo grep -qE '^\s*FONT=' /etc/vconsole.conf; then
-	sudo sed -i 's/^\s*FONT=.*/FONT=ter-714n/' /etc/vconsole.conf
+handleInstallMany terminus-font fontconfig
+setfont ter-714n
+touch /etc/vconsole.conf
+if grep -qE '^\s*FONT=' /etc/vconsole.conf; then
+	sed -i 's/^\s*FONT=.*/FONT=ter-714n/' /etc/vconsole.conf
 else
-	echo "FONT=ter-714n" | sudo tee -a /etc/vconsole.conf >/dev/null
+	echo "FONT=ter-714n" | tee -a /etc/vconsole.conf >/dev/null
 fi
 
 echo -e "${Title}Configuring Audio${END}"
-handleInstall pipewire 
-handleInstall lib32-pipewire
-handleInstall pipewire-docs
-handleInstall wireplumber
-handleInstall pipewire-audio
-handleInstall pipewire-alsa
-handleInstall pipewire-pulse
-handleInstall pipewire-jack 
-handleInstall lib32-pipewire-jack
-handleInstall alsa-utils
-systemctl --user enable pipewire wireplumber pipewire-pulse
+handleInstallMany \
+	pipewire lib32-pipewire pipewire-docs wireplumber \
+	pipewire-audio pipewire-alsa pipewire-pulse \
+	pipewire-jack lib32-pipewire-jack alsa-utils
+runAsInstallUser systemctl --user enable pipewire wireplumber pipewire-pulse
 
 echo -e "${Title}Configuring Video${END}"
-handleInstall dkms
-handleInstall nvidia-open-dkms 
-handleInstall nvidia-utils 
-handleInstall lib32-nvidia-utils 
-handleInstall nvidia-settings
-handleInstall libva-nvidia-driver
-handleInstall gamemode
-handleInstall lib32-gamemode
-handleInstall vulkan-tools
+handleInstallMany \
+	dkms nvidia-open-dkms nvidia-utils lib32-nvidia-utils \
+	nvidia-settings libva-nvidia-driver \
+	gamemode lib32-gamemode vulkan-tools
 configureNvidiaInitramfs
+configureNvidiaKernel
+setNvidiaPersistenceMode
 
 echo -e "${Title}Setup Desktop${END}"
-handleInstall hyprland 
-handleInstall aquamarine 
-handleInstall hyprlang 
-handleInstall hyprcursor 
-handleInstall hyprutils 
-handleInstall hyprgraphics
-handleInstall hyprtoolkit
-handleInstall hyprland-guiutils 
-handleInstall hyprwayland-scanner
-handleInstall hyprpaper
-handleInstall xdg-desktop-portal
-handleInstall xdg-desktop-portal-hyprland
-handleInstall hyprpolkitagent
-handleInstall hyprpwcenter
-handleInstall hyprshutdown
-handleInstall mako
-handleInstall dunst
-handleInstall libnotify
-handleInstall qt5-wayland
-handleInstall qt6-wayland
 handleRemove ashell
-handleInstall eww
-handleInstall fuzzel
-handleInstall wl-clipboard
-handleInstall cliphist
-handleInstall udiskie
-handleInstall pcmanfm-qt
-handleInstall monique
+handleInstallMany \
+	hyprland aquamarine hyprlang hyprcursor hyprutils \
+	hyprgraphics hyprtoolkit hyprland-guiutils hyprwayland-scanner \
+	hyprpaper xdg-desktop-portal xdg-desktop-portal-hyprland xdg-desktop-portal-gtk \
+	hyprpolkitagent hyprpwcenter hyprshutdown \
+	dunst libnotify qt5-wayland qt6-wayland \
+	eww fuzzel wl-clipboard cliphist udiskie pcmanfm-qt \
+	monique hyprlock hypridle grim slurp
 echo "Start Hyprland once to generate configs"
 if [ -n "$WAYLAND_DISPLAY" ] || [ -n "$DISPLAY" ]; then
 	echo "Skipping Hyprland first-run because a graphical session is already active."
@@ -692,7 +1283,7 @@ else
 	HyprlandLog="$InstallHome/.cache/zerth-hyprland-first-run.log"
 	mkdir -p "$InstallHome/.cache"
 	touch "$HyprlandLog"
-	sudo chown "$InstallUser:$InstallGroup" "$InstallHome/.cache" "$HyprlandLog"
+	chown "$InstallUser:$InstallGroup" "$InstallHome/.cache" "$HyprlandLog"
 
 	runAsInstallUser start-hyprland -- > "$HyprlandLog" 2>&1 &
 	HyprlandPid=$!
@@ -709,42 +1300,85 @@ fi
 configureHyprlandConfig
 configureHyprpaperConfig
 configureEwwConfig
+configureHypridleConfig
+configureHyprlockConfig
+setNvidiaPowerMizerModeInHyprland
 
 echo -e "${Title}Install Applications${END}"
-handleInstall foot
-handleInstall vesktop
-handleInstall steam
-handleInstall gamescope
-handleInstall xorg-xwayland
-handleInstall protontricks
-handleInstall wine
-handleInstall winetricks
-handleInstall freecad
 handleRemove firefox
-handleInstall helium-browser-bin
-handleInstall visual-studio-code-bin
-handleInstall jetbrains-toolbox
-handleInstall btop
+handleInstallMany \
+	foot vesktop steam gamescope xorg-xwayland \
+	protontricks wine winetricks freecad \
+	zen-browser-bin visual-studio-code-bin jetbrains-toolbox btop
+
+configureGithubVault
+configureHermesAgent
+configureHermesBackup
+runAsInstallUser sh -lc 'export PATH="$HOME/.local/bin:$PATH"; if [ -x "$HOME/.local/bin/vault-backup" ]; then "$HOME/.local/bin/vault-backup" || true; fi'
 
 echo -e "${Title}Configuring Arch${END}"
 echo "Enable SSD TRIM"
-sudo systemctl enable fstrim.timer
+systemctl enable fstrim.timer
+echo "Enable paccache weekly prune timer"
+systemctl enable paccache.timer
 echo "Enable TuneD"
-sudo systemctl enable tuned.service
-sudo systemctl start tuned.service
-sudo tuned-adm profile throughput-performance
+systemctl enable tuned.service
+systemctl start tuned.service
+tuned-adm profile throughput-performance
 echo "Enable NetworkManager"
-sudo systemctl enable NetworkManager.service
-sudo systemctl start NetworkManager.service
+systemctl enable NetworkManager.service
+systemctl start NetworkManager.service
 echo "Enable Bluetooth"
-sudo systemctl enable bluetooth.service
-sudo systemctl start bluetooth.service
+systemctl enable bluetooth.service
+systemctl start bluetooth.service
+echo "Configure zram swap"
+if [ ! -f /etc/systemd/zram-generator.conf ]; then
+	cat > /etc/systemd/zram-generator.conf <<'EOF'
+[zram0]
+# Compressed swap in RAM — size capped at half physical RAM
+zram-size = min(ram / 2, 8192)
+compression-algorithm = zstd
+EOF
+fi
+systemctl daemon-reload
+systemctl start systemd-zram-setup@zram0.service || \
+	echo "WARNING: zram setup failed; swap will be unavailable until reboot." >&2
+echo "Configure nftables firewall"
+if [ ! -f /etc/nftables.conf ] || ! grep -q 'zerth' /etc/nftables.conf; then
+	cat > /etc/nftables.conf <<'EOF'
+#!/usr/sbin/nft -f
+# Zerth minimal stateful firewall — deny unsolicited inbound, allow all outbound
+
+flush ruleset
+
+table inet filter {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		ct state invalid drop
+		ct state { established, related } accept
+		iif lo accept
+		ip protocol icmp accept
+		ip6 nexthdr icmpv6 accept
+		# Uncomment to allow SSH inbound:
+		# tcp dport 22 accept
+	}
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+	chain output {
+		type filter hook output priority filter; policy accept;
+	}
+}
+EOF
+fi
+systemctl enable nftables.service
+systemctl start nftables.service
 echo "Set user shell to Fish"
 if [ -n "$InstallUser" ] && [ "$InstallUser" != "root" ]; then
 	if ! grep -qx "/usr/bin/fish" /etc/shells; then
-		echo "/usr/bin/fish" | sudo tee -a /etc/shells >/dev/null
+		echo "/usr/bin/fish" | tee -a /etc/shells >/dev/null
 	fi
-	sudo chsh -s /usr/bin/fish "$InstallUser"
+	chsh -s /usr/bin/fish "$InstallUser"
 else
 	echo "Skipping shell change because no non-root install user was detected."
 fi
@@ -774,8 +1408,16 @@ if [ -f "$ProggyFont" ]; then
 	else
 		printf "[main]\nfont=%s:pixelsize=%s\n" "$FootFont" "$FootFontSize" > "$FootConfig"
 	fi
+	# Foot defaults selected text to the PRIMARY selection only. That works
+	# terminal-to-terminal, but Chromium/Helium Ctrl+V reads CLIPBOARD.
+	# Copy selections to both so terminal -> browser paste works normally.
+	if grep -qE '^\s*selection-target=' "$FootConfig"; then
+		sed -i 's|^\s*selection-target=.*|selection-target=both|' "$FootConfig"
+	else
+		printf "selection-target=both\n" >> "$FootConfig"
+	fi
 	if [ "$InstallUser" != "root" ]; then
-		sudo chown -R "$InstallUser:$InstallGroup" "$InstallHome/.config/foot" "$InstallHome/.local/share/fonts/proggyfonts"
+		chown -R "$InstallUser:$InstallGroup" "$InstallHome/.config/foot" "$InstallHome/.local/share/fonts/proggyfonts"
 	fi
 else
 	echo "ProggyClean.ttf not found at $ProggyFont; skipping Foot font configuration."
@@ -783,4 +1425,4 @@ fi
 copySshKeysFromUsb
 
 read -r -p "Installation complete. Press Enter to reboot."
-sudo reboot
+reboot
