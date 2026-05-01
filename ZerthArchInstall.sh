@@ -437,18 +437,24 @@ case "$1" in
 	top-proc)
 		ps -eo comm=,%cpu= --sort=-%cpu 2>/dev/null | awk 'NF {printf "%s %s%%\n", $1, $2; exit}'
 		;;
-	launch-btop)
-		if command -v hyprctl >/dev/null 2>&1; then
-			hyprctl dispatch exec "foot --app-id zerth-btop --title 'Zerth System' -e btop" >/dev/null 2>&1
+	uptime)
+		uptime -p 2>/dev/null | sed 's/^up //'
+		;;
+	disk-free)
+		df -hP "$HOME" | awk 'NR==2 {printf "%s free / %s\n", $4, $2}'
+		;;
+	gpu-temp)
+		if command -v nvidia-smi >/dev/null 2>&1; then
+			nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null | awk 'NR==1 {print $1 "C"}'
 		else
-			foot --app-id zerth-btop --title 'Zerth System' -e btop >/dev/null 2>&1 &
+			printf -- '--\n'
 		fi
 		;;
-	launch-hermes)
-		if command -v hyprctl >/dev/null 2>&1; then
-			hyprctl dispatch exec "foot --app-id zerth-hermes --title 'Zerth Hermes' -e sh -lc 'export PATH=\"$HOME/.local/bin:$PATH\"; if command -v hermes >/dev/null 2>&1; then hermes --tui; else printf \"Hermes not found. Press Enter.\"; read -r _; fi'" >/dev/null 2>&1
+	vram)
+		if command -v nvidia-smi >/dev/null 2>&1; then
+			nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | awk -F', ' 'NR==1 {printf "%s/%s MiB\n", $1, $2}'
 		else
-			foot --app-id zerth-hermes --title 'Zerth Hermes' -e sh -lc 'export PATH="$HOME/.local/bin:$PATH"; if command -v hermes >/dev/null 2>&1; then hermes --tui; else printf "Hermes not found. Press Enter."; read -r _; fi' >/dev/null 2>&1 &
+			printf -- '--\n'
 		fi
 		;;
 	*)
@@ -471,6 +477,10 @@ EOF
 (defpoll zerth_disk_pct :interval "15s" "$status_script disk-pct")
 (defpoll zerth_gpu_pct :interval "3s" "$status_script gpu-pct")
 (defpoll zerth_top_proc :interval "3s" "$status_script top-proc")
+(defpoll zerth_uptime :interval "60s" "$status_script uptime")
+(defpoll zerth_disk_free :interval "30s" "$status_script disk-free")
+(defpoll zerth_gpu_temp :interval "5s" "$status_script gpu-temp")
+(defpoll zerth_vram :interval "5s" "$status_script vram")
 
 (defwindow zerth_overlay
   :monitor 0
@@ -488,12 +498,6 @@ EOF
 (defwidget zerth_button [label command]
   (button :class "stone-button" :onclick command label))
 
-(defwidget zerth_console_card [title subtitle command]
-  (box :class "console-card" :orientation "v" :space-evenly false
-    (label :class "console-title" :halign "start" :text title)
-    (label :class "console-subtitle" :halign "start" :text subtitle)
-    (button :class "console-launch" :halign "start" :onclick command "OPEN")))
-
 (defwidget zerth_metric [name value]
   (box :class "metric" :orientation "v" :space-evenly false
     (box :orientation "h" :space-evenly false
@@ -501,31 +505,36 @@ EOF
       (label :class "metric-value" :halign "end" :text "\${value}%"))
     (progress :class "metric-bar" :value value :max 100)))
 
+(defwidget zerth_info_row [label value]
+  (box :class "info-row" :orientation "h" :space-evenly false
+    (label :class "info-label" :halign "start" :text label)
+    (label :class "info-value" :halign "end" :text value)))
+
 (defwidget zerth_system_panel []
   (box :class "console-card system-card" :orientation "v" :space-evenly false
     (label :class "console-title" :halign "start" :text "SYSTEM")
     (label :class "console-subtitle" :halign "start" :text "native overlay telemetry")
-    (zerth_metric :name "CPU" :value zerth_cpu_pct)
-    (zerth_metric :name "MEM" :value zerth_mem_pct)
-    (zerth_metric :name "GPU" :value zerth_gpu_pct)
-    (zerth_metric :name "DSK" :value zerth_disk_pct)
-    (zerth_readout :label "TOP" :value zerth_top_proc)
-    (button :class "console-launch" :halign "start" :onclick "$status_script launch-btop" "BTOP")))
-
-(defwidget zerth_terminal_panel []
-  (box :class "console-card terminal-card" :orientation "v" :space-evenly false
-    (label :class "console-title" :halign "start" :text "HERMES")
-    (label :class "console-subtitle" :halign "start" :text "terminal-backed agent session")
-    (box :class "terminal-mock" :orientation "v" :space-evenly false
-      (label :class "terminal-line dim" :halign "start" :text "zerth@themantle:~$ hermes --tui")
-      (label :class "terminal-line" :halign "start" :text "memory: vault-backed")
-      (label :class "terminal-line" :halign "start" :text "status: ready")
-      (label :class "terminal-line accent" :halign "start" :text "open interactive terminal →"))
-    (button :class "console-launch" :halign "start" :onclick "$status_script launch-hermes" "OPEN HERMES")))
+    (box :class "metric-grid" :orientation "h" :space-evenly false
+      (box :class "metric-column" :orientation "v" :space-evenly false
+        (zerth_metric :name "CPU" :value zerth_cpu_pct)
+        (zerth_metric :name "MEM" :value zerth_mem_pct))
+      (box :class "metric-column" :orientation "v" :space-evenly false
+        (zerth_metric :name "GPU" :value zerth_gpu_pct)
+        (zerth_metric :name "DSK" :value zerth_disk_pct)))
+    (box :class "system-info" :orientation "v" :space-evenly false
+      (zerth_info_row :label "LOAD" :value zerth_cpu)
+      (zerth_info_row :label "UP" :value zerth_uptime)
+      (zerth_info_row :label "RAM" :value zerth_memory)
+      (zerth_info_row :label "DISK" :value zerth_disk_free)
+      (zerth_info_row :label "GPU" :value zerth_gpu_temp)
+      (zerth_info_row :label "VRAM" :value zerth_vram)
+      (zerth_info_row :label "NET" :value zerth_network)
+      (zerth_info_row :label "AUDIO" :value zerth_audio)
+      (zerth_info_row :label "TOP" :value zerth_top_proc))))
 
 (defwidget zerth_screen []
   (box :class "screen-dim" :orientation "v" :space-evenly false
-    (box :class "stone-panel top-panel" :orientation "h" :space-evenly false
+    (box :class "stone-panel top-panel" :orientation "h" :space-evenly false :halign "start"
       (label :class "sigil" :text "ZERTH")
       (zerth_readout :label "TIME" :value zerth_time)
       (zerth_readout :label "DATE" :value zerth_date)
@@ -535,16 +544,13 @@ EOF
       (zerth_readout :label "MEM" :value zerth_memory)
       (zerth_readout :label "SPACE" :value zerth_workspace))
     (box :class "desk" :orientation "h" :space-evenly false
-      (zerth_system_panel)
-      (zerth_terminal_panel))
+      (zerth_system_panel))
     (box :class "spacer")
-    (box :class "stone-panel control-panel" :orientation "h" :space-evenly false
+    (box :class "stone-panel control-panel" :orientation "h" :space-evenly false :halign "start"
       (zerth_button :label "-VOL" :command "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-")
       (zerth_button :label "MUTE" :command "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle")
       (zerth_button :label "+VOL" :command "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+")
       (zerth_button :label "TERM" :command "foot")
-      (zerth_button :label "SYS" :command "$status_script launch-btop")
-      (zerth_button :label "AI" :command "$status_script launch-hermes")
       (zerth_button :label "MENU" :command "fuzzel")
       (zerth_button :label "FILES" :command "pcmanfm-qt"))))
 EOF
@@ -566,7 +572,7 @@ EOF
   padding: 10px 12px;
   background-color: #090812;
   border: 1px solid #6f5cff;
-  box-shadow: inset 0 0 0 1px #1b1730, 0 0 7px rgba(126, 102, 255, 0.55);
+  box-shadow: inset 0 0 0 1px #1b1730, 0 0 5px rgba(126, 102, 255, 0.34);
 }
 
 .top-panel {
@@ -578,12 +584,12 @@ EOF
 }
 
 .console-card {
-  min-width: 360px;
+  min-width: 560px;
   margin-right: 18px;
   padding: 18px;
   background-color: #07060d;
   border: 1px solid #4a3fb0;
-  box-shadow: inset 0 0 0 1px #151224, 0 0 9px rgba(126, 102, 255, 0.50);
+  box-shadow: inset 0 0 0 1px #151224, 0 0 6px rgba(126, 102, 255, 0.32);
 }
 
 .console-title {
@@ -637,27 +643,36 @@ EOF
 
 .metric-bar progress {
   background-color: #8f7dff;
-  box-shadow: 0 0 5px rgba(196, 187, 255, 0.80);
+  box-shadow: 0 0 3px rgba(196, 187, 255, 0.55);
 }
 
-.terminal-mock {
+.metric-grid {
+  margin-top: 8px;
+}
+
+.metric-column {
+  min-width: 245px;
+  margin-right: 18px;
+}
+
+.system-info {
   margin-top: 14px;
-  padding: 12px;
+  padding: 10px;
   background-color: #030207;
   border: 1px solid #34304d;
 }
 
-.terminal-line {
-  margin-top: 4px;
-  color: #d8d5e6;
+.info-row {
+  margin-top: 5px;
 }
 
-.terminal-line.dim {
+.info-label {
+  min-width: 58px;
   color: #8f8aa8;
 }
 
-.terminal-line.accent {
-  color: #c4bbff;
+.info-value {
+  color: #e8e4ff;
 }
 
 .control-panel {
@@ -1271,36 +1286,6 @@ configureHyprlandConfig() {
 	ensureHyprLine 'exec-once = hyprpaper' "$config"
 	sed -i -E '/^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*ashell[[:space:]]*$/d' "$config"
 	ensureHyprLine 'exec-once = eww daemon' "$config"
-	# Hyprland 0.54+ uses structured windowrule blocks. These make the
-	# Eww-launched terminal panels behave like part of the overlay. Remove
-	# legacy flat rules first so reruns clean up earlier installer versions.
-	sed -i -E '/^[[:space:]]*windowrule(v2)?[[:space:]]*=[[:space:]]*(float|pin|size|move|opacity).*(zerth-btop|zerth-hermes)/d' "$config"
-	if ! grep -q 'name = zerth-btop-panel' "$config"; then
-		cat >> "$config" <<'EOF'
-windowrule {
-    name = zerth-btop-panel
-    match:class = ^(zerth-btop)$
-    float = true
-    pin = true
-    size = 44% 70%
-    move = 2% 14%
-    opacity = 0.96 0.92
-}
-EOF
-	fi
-	if ! grep -q 'name = zerth-hermes-panel' "$config"; then
-		cat >> "$config" <<'EOF'
-windowrule {
-    name = zerth-hermes-panel
-    match:class = ^(zerth-hermes)$
-    float = true
-    pin = true
-    size = 44% 70%
-    move = 54% 14%
-    opacity = 0.96 0.92
-}
-EOF
-	fi
 	ensureHyprLine 'exec-once = udiskie --tray' "$config"
 	ensureHyprLine 'exec-once = wl-paste --type text --watch cliphist store' "$config"
 	ensureHyprLine 'exec-once = wl-paste --type image --watch cliphist store' "$config"
@@ -1313,8 +1298,6 @@ EOF
 	ensureHyprLine 'bind = $mainMod, R, exec, $menu' "$config"
 	ensureHyprLine 'bind = $mainMod, T, exec, eww open zerth_overlay' "$config"
 	ensureHyprLine 'bindr = $mainMod, T, exec, eww close zerth_overlay' "$config"
-	ensureHyprLine "bind = \$mainMod SHIFT, B, exec, $InstallHome/.config/eww/zerth-status.sh launch-btop" "$config"
-	ensureHyprLine "bind = \$mainMod SHIFT, H, exec, $InstallHome/.config/eww/zerth-status.sh launch-hermes" "$config"
 	ensureHyprLine 'bind = $mainMod, L, exec, hyprlock' "$config"
 	ensureHyprLine 'bind = , Print, exec, grim - | wl-copy' "$config"
 	ensureHyprLine 'bind = SHIFT, Print, exec, grim -g "$(slurp)" - | wl-copy' "$config"
