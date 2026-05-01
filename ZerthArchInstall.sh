@@ -1155,13 +1155,36 @@ configureHyprlandConfig() {
 	ensureHyprLine 'exec-once = hyprpaper' "$config"
 	sed -i -E '/^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*ashell[[:space:]]*$/d' "$config"
 	ensureHyprLine 'exec-once = eww daemon' "$config"
-	ensureHyprLine 'windowrulev2 = float,class:^(zerth-btop|zerth-hermes)$' "$config"
-	ensureHyprLine 'windowrulev2 = pin,class:^(zerth-btop|zerth-hermes)$' "$config"
-	ensureHyprLine 'windowrulev2 = size 44% 70%,class:^(zerth-btop)$' "$config"
-	ensureHyprLine 'windowrulev2 = move 2% 14%,class:^(zerth-btop)$' "$config"
-	ensureHyprLine 'windowrulev2 = size 44% 70%,class:^(zerth-hermes)$' "$config"
-	ensureHyprLine 'windowrulev2 = move 54% 14%,class:^(zerth-hermes)$' "$config"
-	ensureHyprLine 'windowrulev2 = opacity 0.96 0.92,class:^(zerth-btop|zerth-hermes)$' "$config"
+	# Hyprland 0.54+ uses structured windowrule blocks. These make the
+	# Eww-launched terminal panels behave like part of the overlay. Remove
+	# legacy flat rules first so reruns clean up earlier installer versions.
+	sed -i -E '/^[[:space:]]*windowrule(v2)?[[:space:]]*=[[:space:]]*(float|pin|size|move|opacity).*(zerth-btop|zerth-hermes)/d' "$config"
+	if ! grep -q 'name = zerth-btop-panel' "$config"; then
+		cat >> "$config" <<'EOF'
+windowrule {
+    name = zerth-btop-panel
+    match:class = ^(zerth-btop)$
+    float = true
+    pin = true
+    size = 44% 70%
+    move = 2% 14%
+    opacity = 0.96 0.92
+}
+EOF
+	fi
+	if ! grep -q 'name = zerth-hermes-panel' "$config"; then
+		cat >> "$config" <<'EOF'
+windowrule {
+    name = zerth-hermes-panel
+    match:class = ^(zerth-hermes)$
+    float = true
+    pin = true
+    size = 44% 70%
+    move = 54% 14%
+    opacity = 0.96 0.92
+}
+EOF
+	fi
 	ensureHyprLine 'exec-once = udiskie --tray' "$config"
 	ensureHyprLine 'exec-once = wl-paste --type text --watch cliphist store' "$config"
 	ensureHyprLine 'exec-once = wl-paste --type image --watch cliphist store' "$config"
