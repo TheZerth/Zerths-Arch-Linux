@@ -1,0 +1,7 @@
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+
+# Local wallpaper inspiration/reference downloads.
+# Keep generated installable Lapis Obscura wallpapers under wallpapers/lapis-obscura/ tracked.
+wallpapers/references/

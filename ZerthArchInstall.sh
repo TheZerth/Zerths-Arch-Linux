@@ -7,6 +7,7 @@ if [ "$(id -u)" -ne 0 ]; then
 	exit 1
 fi
 
+ScriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PacConfig="/etc/pacman.conf"
 MkinitcpioConfig="/etc/mkinitcpio.conf"
 InstallUser="${SUDO_USER:-$USER}"
@@ -296,32 +297,45 @@ setHyprBlockOption() {
 	block_regex="$(printf '%s\n' "$block" | sed 's/[][\\.^$*+?{}|()]/\\&/g')"
 	option_regex="$(printf '%s\n' "$option" | sed 's/[][\\.^$*+?{}|()]/\\&/g')"
 
-	if grep -qE "^[[:space:]]*$block_regex[[:space:]]*\{" "$config"; then
-		if sed -n -E "/^[[:space:]]*$block_regex[[:space:]]*\{/,/^[[:space:]]*\}/p" "$config" | grep -qE "^[[:space:]]*$option_regex[[:space:]]*="; then
-			sed -i -E "/^[[:space:]]*$block_regex[[:space:]]*\{/,/^[[:space:]]*\}/ s|^[[:space:]]*$option_regex[[:space:]]*=.*|    $option = $value|" "$config"
+	if grep -qE "^[[:space:]]*${block_regex}[[:space:]]*[{]" "$config"; then
+		if sed -n -E "/^[[:space:]]*${block_regex}[[:space:]]*[{]/,/^[[:space:]]*[}]/p" "$config" | grep -qE "^[[:space:]]*${option_regex}[[:space:]]*="; then
+			sed -i -E "/^[[:space:]]*${block_regex}[[:space:]]*[{]/,/^[[:space:]]*[}]/ s|^[[:space:]]*${option_regex}[[:space:]]*=.*|    $option = $value|" "$config"
 		else
-			sed -i -E "/^[[:space:]]*$block_regex[[:space:]]*\{/a\\    $option = $value" "$config"
+			sed -i -E "/^[[:space:]]*${block_regex}[[:space:]]*[{]/a\\    $option = $value" "$config"
 		fi
 	else
 		printf '\n%s {\n    %s = %s\n}\n' "$block" "$option" "$value" >> "$config"
 	fi
 }
 
-configureSamsungOledG8Monitor() {
+configureManualMonitorLayout() {
 	local config="$1"
-	local output="${ZERTH_HYPR_MONITOR_OUTPUT:-}"
+	local primary_output="${ZERTH_HYPR_PRIMARY_OUTPUT:-${ZERTH_HYPR_MONITOR_OUTPUT:-DP-3}}"
+	local primary_mode="${ZERTH_HYPR_PRIMARY_MODE:-${ZERTH_HYPR_MONITOR_MODE:-3440x1440@120}}"
+	local primary_position="${ZERTH_HYPR_PRIMARY_POSITION:-${ZERTH_HYPR_MONITOR_POSITION:-0x0}}"
+	local primary_scale="${ZERTH_HYPR_PRIMARY_SCALE:-${ZERTH_HYPR_MONITOR_SCALE:-1}}"
+	local portrait_output="${ZERTH_HYPR_PORTRAIT_OUTPUT:-DP-2}"
+	local portrait_mode="${ZERTH_HYPR_PORTRAIT_MODE:-2560x1440@144}"
+	local portrait_position="${ZERTH_HYPR_PORTRAIT_POSITION:-3440x-560}"
+	local portrait_scale="${ZERTH_HYPR_PORTRAIT_SCALE:-1}"
+	local portrait_transform="${ZERTH_HYPR_PORTRAIT_TRANSFORM:-1}"
 
 	sed -i -E '/^[[:space:]]*monitor[[:space:]]*=[[:space:]]*,[[:space:]]*preferred[[:space:]]*,[[:space:]]*auto[[:space:]]*,[[:space:]]*(auto|1)[[:space:]]*$/d' "$config"
+	sed -i '/^# Zerth manual monitor layout start$/,/^# Zerth manual monitor layout end$/d' "$config"
 	sed -i '/^# Zerth Samsung OLED G8 monitor start$/,/^# Zerth Samsung OLED G8 monitor end$/d' "$config"
 
 	{
-		printf '\n# Zerth Samsung OLED G8 monitor start\n'
-		printf '# Set ZERTH_HYPR_MONITOR_OUTPUT before running to pin a specific output, e.g. DP-1 or HDMI-A-1.\n'
+		printf '\n# Zerth manual monitor layout start\n'
+		printf '# Manual monitor configuration is intentional; do not fall back to auto.\n'
+		printf '# Primary: Samsung Odyssey G8 ultrawide, HDR, 3440x1440.\n'
+		printf '# Portrait: LG 27GL850, SDR/sRGB, 2560x1440 rotated clockwise into 1440x2560.\n'
+		printf '# Override outputs/modes before running if connector names change:\n'
+		printf '# ZERTH_HYPR_PRIMARY_OUTPUT=DP-3 ZERTH_HYPR_PORTRAIT_OUTPUT=DP-2\n'
 		printf 'monitorv2 {\n'
-		printf '    output = %s\n' "$output"
-		printf '    mode = 3440x1440@120\n'
-		printf '    position = 0x0\n'
-		printf '    scale = 1\n'
+		printf '    output = %s\n' "$primary_output"
+		printf '    mode = %s\n' "$primary_mode"
+		printf '    position = %s\n' "$primary_position"
+		printf '    scale = %s\n' "$primary_scale"
 		printf '    bitdepth = 10\n'
 		printf '    cm = hdr\n'
 		printf '    sdrbrightness = 1.2\n'
@@ -332,60 +346,92 @@ configureSamsungOledG8Monitor() {
 		printf '    vrr = 1\n'
 		printf '    supports_wide_color = 1\n'
 		printf '    supports_hdr = 1\n'
+		printf '}\n\n'
+		printf 'monitorv2 {\n'
+		printf '    output = %s\n' "$portrait_output"
+		printf '    mode = %s\n' "$portrait_mode"
+		printf '    position = %s\n' "$portrait_position"
+		printf '    scale = %s\n' "$portrait_scale"
+		printf '    transform = %s\n' "$portrait_transform"
+		printf '    cm = srgb\n'
+		printf '    sdrbrightness = 1.0\n'
+		printf '    sdrsaturation = 1.0\n'
+		printf '    vrr = 0\n'
+		printf '    supports_wide_color = 0\n'
+		printf '    supports_hdr = 0\n'
 		printf '}\n'
-		printf '# Zerth Samsung OLED G8 monitor end\n'
+		printf '# Zerth manual monitor layout end\n'
 	} >> "$config"
 }
 
 configureHyprpaperConfig() {
 	local config="$InstallHome/.config/hypr/hyprpaper.conf"
-	local wallpaper="${ZERTH_HYPRPAPER_WALLPAPER:-$InstallHome/Pictures/wallpaper.png}"
-	local escaped_wallpaper
-
-	escaped_wallpaper="$(printf '%s\n' "$wallpaper" | sed 's/[&|\\]/\\&/g')"
+	local wallpaper_dir="$InstallHome/Pictures/Wallpapers/LapisObscura"
+	local repo_wallpaper_dir="$ScriptDir/wallpapers/lapis-obscura"
+	local generator="$ScriptDir/wallpapers/scripts/generate_lapis_obscura_wallpapers.py"
+	local default_wallpaper="$wallpaper_dir/lapis-obscura-terminal-temple-3440x1440.png"
+	local ultrawide_wallpaper="${ZERTH_HYPRPAPER_ULTRAWIDE_WALLPAPER:-$default_wallpaper}"
+	local portrait_wallpaper="${ZERTH_HYPRPAPER_PORTRAIT_WALLPAPER:-$wallpaper_dir/lapis-obscura-terminal-temple-1440x2560.png}"
+	local wallpaper="${ZERTH_HYPRPAPER_WALLPAPER:-$default_wallpaper}"
+	local ultrawide_output="${ZERTH_HYPRPAPER_ULTRAWIDE_OUTPUT:-${ZERTH_HYPR_PRIMARY_OUTPUT:-DP-3}}"
+	local portrait_output="${ZERTH_HYPRPAPER_PORTRAIT_OUTPUT:-${ZERTH_HYPR_PORTRAIT_OUTPUT:-DP-2}}"
+	local wp
+	local wallpapers=()
 
 	echo "Configure Hyprpaper"
-	mkdir -p "$InstallHome/.config/hypr" "$InstallHome/Pictures"
-	if [ ! -f "$config" ]; then
-		{
-			printf '# Zerth wallpaper section\n'
-			printf '# Hyprpaper needs a local image path. Override before running with:\n'
-			printf '# ZERTH_HYPRPAPER_WALLPAPER=/path/to/wallpaper.png\n'
+	mkdir -p "$InstallHome/.config/hypr" "$wallpaper_dir"
+
+	if [ -d "$repo_wallpaper_dir" ]; then
+		cp -f "$repo_wallpaper_dir"/* "$wallpaper_dir"/ 2>/dev/null || true
+	elif [ -x "$generator" ] && command -v python >/dev/null 2>&1; then
+		if python - <<'PY' >/dev/null 2>&1
+import PIL
+PY
+		then
+			python "$generator" --out "$wallpaper_dir"
+		else
+			echo "python-pillow is not installed; skipping generated wallpaper creation."
+		fi
+	fi
+
+	shopt -s nullglob
+	wallpapers=("$wallpaper_dir"/*.png "$wallpaper_dir"/*.jpg "$wallpaper_dir"/*.jpeg "$wallpaper_dir"/*.webp)
+	shopt -u nullglob
+
+	if [ "${#wallpapers[@]}" -eq 0 ]; then
+		echo "No Lapis Obscura wallpapers found; Hyprpaper will reference $wallpaper."
+	fi
+
+	{
+		printf '# Zerth Lapis Obscura wallpaper section\n'
+		printf '# Source assets: %s/wallpapers/lapis-obscura\n' "$ScriptDir"
+		printf '# Saved locally: %s\n' "$wallpaper_dir"
+		printf '# Override default wallpaper before running with:\n'
+		printf '# ZERTH_HYPRPAPER_WALLPAPER=/path/to/wallpaper.png\n'
+		printf '# Optional dual-monitor outputs default to DP-3 ultrawide and DP-2 portrait:\n'
+		printf '# ZERTH_HYPRPAPER_ULTRAWIDE_OUTPUT=DP-3\n'
+		printf '# ZERTH_HYPRPAPER_PORTRAIT_OUTPUT=DP-2\n'
+		for wp in "${wallpapers[@]}"; do
+			printf 'preload = %s\n' "$wp"
+		done
+		if [ "${#wallpapers[@]}" -eq 0 ]; then
 			printf 'preload = %s\n' "$wallpaper"
+		fi
+		if [ -n "$ultrawide_output" ] || [ -n "$portrait_output" ]; then
+			if [ -n "$ultrawide_output" ]; then
+				printf 'wallpaper = %s,%s\n' "$ultrawide_output" "$ultrawide_wallpaper"
+			fi
+			if [ -n "$portrait_output" ]; then
+				printf 'wallpaper = %s,%s\n' "$portrait_output" "$portrait_wallpaper"
+			fi
+		else
 			printf 'wallpaper = ,%s\n' "$wallpaper"
-			printf 'splash = false\n'
-		} > "$config"
-	else
-		if grep -qE '^[[:space:]]*preload[[:space:]]*=' "$config"; then
-			sed -i -E "0,/^[[:space:]]*preload[[:space:]]*=/{s|^[[:space:]]*preload[[:space:]]*=.*|preload = $escaped_wallpaper|}" "$config"
-		else
-			printf '\n# Zerth wallpaper section\npreload = %s\n' "$wallpaper" >> "$config"
 		fi
-
-		if grep -qE '^[[:space:]]*wallpaper[[:space:]]*=' "$config"; then
-			sed -i -E "0,/^[[:space:]]*wallpaper[[:space:]]*=/{s|^[[:space:]]*wallpaper[[:space:]]*=.*|wallpaper = ,$escaped_wallpaper|}" "$config"
-		else
-			printf 'wallpaper = ,%s\n' "$wallpaper" >> "$config"
-		fi
-
-		if grep -qE '^[[:space:]]*splash[[:space:]]*=' "$config"; then
-			sed -i -E '0,/^[[:space:]]*splash[[:space:]]*=/{s|^[[:space:]]*splash[[:space:]]*=.*|splash = false|}' "$config"
-		else
-			printf 'splash = false\n' >> "$config"
-		fi
-	fi
-
-	if ! grep -qF 'ZERTH_HYPRPAPER_WALLPAPER=/path/to/wallpaper.png' "$config"; then
-		{
-			printf '\n'
-			printf '# Zerth wallpaper section\n'
-			printf '# Hyprpaper needs a local image path. Override before running with:\n'
-			printf '# ZERTH_HYPRPAPER_WALLPAPER=/path/to/wallpaper.png\n'
-		} >> "$config"
-	fi
+		printf 'splash = false\n'
+	} > "$config"
 
 	if [ "$InstallUser" != "root" ]; then
-		chown "$InstallUser:$InstallGroup" "$config" "$InstallHome/Pictures"
+		chown -R "$InstallUser:$InstallGroup" "$config" "$wallpaper_dir" "$InstallHome/Pictures"
 	fi
 }
 
@@ -548,8 +594,8 @@ EOF
 
 (defwidget zerth_system_panel []
   (box :class "console-card system-card" :orientation "v" :space-evenly false
-    (label :class "console-title" :halign "start" :text "SYSTEM")
-    (label :class "console-subtitle" :halign "start" :text "native overlay telemetry")
+    (label :class "console-title" :halign "start" :text "◇ SYSTEM")
+    (label :class "console-subtitle" :halign "start" :text "STONE TELEMETRY")
     (box :class "metric-grid" :orientation "h" :space-evenly false
       (box :class "metric-column" :orientation "v" :space-evenly false
         (zerth_metric :name "CPU" :value zerth_cpu_pct)
@@ -571,7 +617,7 @@ EOF
 (defwidget zerth_screen []
   (box :class "screen-dim" :orientation "v" :space-evenly false
     (box :class "stone-panel top-panel" :orientation "h" :space-evenly false :halign "start"
-      (label :class "sigil" :text "ZERTH")
+      (label :class "sigil" :text "◇ ZERTH")
       (zerth_readout :label "TIME" :value zerth_time)
       (zerth_readout :label "DATE" :value zerth_date)
       (zerth_readout :label "AUDIO" :value zerth_audio)
@@ -592,6 +638,7 @@ EOF
 EOF
 
 	cat > "$scss" <<'EOF'
+/* Lapis Obscura: dark stone first; accents as mineral signal. */
 * {
   all: unset;
   font-family: "ProggyClean", "Terminus", monospace;
@@ -599,87 +646,87 @@ EOF
 }
 
 .screen-dim {
-  background-color: rgba(2, 2, 6, 0.84);
-  color: #d8d5e6;
+  background-color: rgba(5, 4, 8, 0.82);
+  color: #c8c8d0;
 }
 
 .stone-panel {
-  margin: 18px;
-  padding: 10px 12px;
-  background-color: #090812;
-  border: 1px solid #6f5cff;
-  box-shadow: inset 0 0 0 1px #1b1730, 0 0 5px rgba(126, 102, 255, 0.34);
+  margin: 21px;
+  padding: 8px 13px;
+  background-color: rgba(9, 8, 18, 0.96);
+  border: 1px solid #24212c;
+  box-shadow: inset 0 0 0 1px #111016;
 }
 
 .top-panel {
-  border-color: #8f7dff;
+  border-color: #55515d;
 }
 
 .desk {
-  margin: 0 18px;
+  margin: 0 21px;
 }
 
 .console-card {
   min-width: 560px;
-  margin-right: 18px;
-  padding: 18px;
-  background-color: #07060d;
-  border: 1px solid #4a3fb0;
-  box-shadow: inset 0 0 0 1px #151224, 0 0 6px rgba(126, 102, 255, 0.32);
+  margin-right: 21px;
+  padding: 21px;
+  background-color: rgba(13, 11, 24, 0.97);
+  border: 1px solid #24212c;
+  box-shadow: inset 0 0 0 1px #111016;
 }
 
 .console-title {
-  color: #f1efff;
-  font-size: 22px;
+  color: #d8a657;
+  font-size: 21px;
   letter-spacing: 2px;
 }
 
 .console-subtitle {
   margin-top: 8px;
-  color: #8f8aa8;
+  color: #918999;
 }
 
 .console-launch {
-  margin-top: 14px;
-  padding: 6px 12px;
-  color: #d8d5ff;
-  background-color: #121026;
-  border: 1px solid #6f5cff;
+  margin-top: 13px;
+  padding: 5px 13px;
+  color: #c8c8d0;
+  background-color: #111016;
+  border: 1px solid #24212c;
 }
 
 .console-launch:hover {
-  color: #ffffff;
-  background-color: #241b4a;
-  border-color: #c4bbff;
+  color: #e4e0e8;
+  background-color: #171522;
+  border-color: #d8a657;
 }
 
 .metric {
-  margin-top: 10px;
+  margin-top: 13px;
 }
 
 .metric-name {
   min-width: 42px;
-  color: #8f8aa8;
+  color: #918999;
 }
 
 .metric-value {
   min-width: 44px;
-  color: #e8e4ff;
+  color: #c8c8d0;
 }
 
 .metric-bar {
-  margin-top: 4px;
+  margin-top: 5px;
   min-height: 8px;
 }
 
 .metric-bar trough {
-  background-color: #05040a;
-  border: 1px solid #34304d;
+  background-color: #050408;
+  border: 1px solid #24212c;
 }
 
 .metric-bar progress {
-  background-color: #8f7dff;
-  box-shadow: 0 0 3px rgba(196, 187, 255, 0.55);
+  background-color: #d8a657;
+  border-right: 1px solid #fabd2f;
 }
 
 .metric-grid {
@@ -688,14 +735,14 @@ EOF
 
 .metric-column {
   min-width: 245px;
-  margin-right: 18px;
+  margin-right: 21px;
 }
 
 .system-info {
-  margin-top: 14px;
-  padding: 10px;
-  background-color: #030207;
-  border: 1px solid #34304d;
+  margin-top: 13px;
+  padding: 13px;
+  background-color: #090812;
+  border: 1px solid #24212c;
 }
 
 .info-row {
@@ -704,53 +751,59 @@ EOF
 
 .info-label {
   min-width: 58px;
-  color: #8f8aa8;
+  color: #918999;
 }
 
 .info-value {
-  color: #e8e4ff;
+  color: #c8c8d0;
 }
 
 .control-panel {
-  margin-bottom: 26px;
+  margin-bottom: 34px;
 }
 
 .sigil {
-  margin-right: 18px;
-  padding: 4px 10px;
-  color: #ffffff;
-  background-color: #17122c;
-  border: 1px solid #8f7dff;
+  margin-right: 13px;
+  padding: 3px 8px;
+  color: #e4e0e8;
+  background-color: #171522;
+  border: 1px solid #d8a657;
 }
 
 .readout {
-  margin-right: 12px;
-  padding: 4px 8px;
-  background-color: #05040a;
-  border: 1px solid #34304d;
+  margin-right: 8px;
+  padding: 3px 8px;
+  background-color: #0d0b18;
+  border: 1px solid #24212c;
 }
 
 .readout-key {
-  margin-right: 6px;
-  color: #8f8aa8;
+  margin-right: 5px;
+  color: #918999;
 }
 
 .readout-value {
-  color: #e8e4ff;
+  color: #c8c8d0;
 }
 
 .stone-button {
-  margin-right: 10px;
-  padding: 5px 10px;
-  color: #e8e4ff;
+  margin-right: 8px;
+  padding: 5px 13px;
+  color: #c8c8d0;
   background-color: #0d0b18;
-  border: 1px solid #5c528a;
+  border: 1px solid #24212c;
 }
 
 .stone-button:hover {
-  color: #ffffff;
-  background-color: #241b4a;
-  border-color: #c4bbff;
+  color: #e4e0e8;
+  background-color: #171522;
+  border-color: #d8a657;
+}
+
+.stone-button:active {
+  color: #050408;
+  background-color: #d8a657;
+  border-color: #fabd2f;
 }
 
 .spacer {
@@ -1044,7 +1097,7 @@ EOF
 				[Yy]*)
 					mkdir -p "$InstallHome/.ssh"
 					chown "$InstallUser:$InstallGroup" "$InstallHome/.ssh"
-					runAsInstallUser sh -lc 'age -d "$HOME/vault/secrets/ssh.tar.age" | tar -C "$HOME/.ssh" -xf -'
+					runAsInstallUser sh -lc "age -d \"\$HOME/vault/secrets/ssh.tar.age\" | tar -C \"\$HOME/.ssh\" -xf -"
 					chmod 700 "$InstallHome/.ssh"
 					find "$InstallHome/.ssh" -type f -name 'id_*' ! -name '*.pub' -exec chmod 600 {} +
 					find "$InstallHome/.ssh" -type f -name '*.pub' -exec chmod 644 {} +
@@ -1067,7 +1120,7 @@ configureHermesAgent() {
 	local fish_conf_dir="$InstallHome/.config/fish/conf.d"
 	local fish_path_conf="$fish_conf_dir/10-local-bin.fish"
 	local profile="$InstallHome/.profile"
-	local hermes_bin="$InstallHome/.local/bin/hermes"
+	local hermes_bin=""
 	local hermes_vault_dir="$InstallHome/vault/backups/hermes"
 	local latest_backup
 	local restore_answer
@@ -1082,14 +1135,14 @@ configureHermesAgent() {
 	mkdir -p "$InstallHome/.local/bin" "$fish_conf_dir"
 	if [ ! -f "$fish_path_conf" ] || ! grep -q 'fish_add_path.*\.local/bin' "$fish_path_conf"; then
 		cat > "$fish_path_conf" <<'EOF'
-# Keep user-installed CLI tools available, including Hermes installed by uv.
+# Keep user-installed CLI tools available.
 fish_add_path -m ~/.local/bin
 EOF
 	fi
 	if [ ! -f "$profile" ] || ! grep -q 'HOME/.local/bin' "$profile"; then
 		cat >> "$profile" <<'EOF'
 
-# User-installed CLI tools, including Hermes installed by uv.
+# User-installed CLI tools.
 case ":$PATH:" in
 	*:"$HOME/.local/bin":*) ;;
 	*) PATH="$HOME/.local/bin:$PATH" ;;
@@ -1099,23 +1152,118 @@ EOF
 	fi
 	chown -R "$InstallUser:$InstallGroup" "$InstallHome/.local" "$InstallHome/.config/fish" "$profile"
 
-	if ! command -v uv >/dev/null 2>&1; then
-		echo "uv not found; skipping Hermes install."
-		return
+	# Install Hermes Agent directly from git instead of the AUR package. The AUR
+	# package can drift from upstream and has produced incomplete venv installs;
+	# this keeps /opt/hermes-agent as the source checkout and installs the hermes
+	# entry point into /opt/hermes-agent/venv/bin/hermes.
+	local hermes_repo="${HERMES_AGENT_REPO_URL:-https://github.com/NousResearch/hermes-agent.git}"
+	local hermes_ref="${HERMES_AGENT_REF:-main}"
+	local hermes_dir="/opt/hermes-agent"
+	# Avoid the [all] extra by default on Arch: it pulls the Matrix encryption
+	# stack, whose python-olm/libolm build currently fails with modern CMake.
+	# Override with HERMES_AGENT_EXTRAS=all if you explicitly want every extra.
+	local hermes_extras="${HERMES_AGENT_EXTRAS:-modal,daytona,vercel,messaging,cron,cli,dev,tts-premium,slack,pty,honcho,mcp,homeassistant,sms,acp,voice,dingtalk,feishu,google,mistral,bedrock,web}"
+	local hermes_update_script="/usr/local/sbin/update-hermes-agent"
+	local hermes_update_service="/etc/systemd/system/hermes-agent-update.service"
+	local hermes_update_timer="/etc/systemd/system/hermes-agent-update.timer"
+
+	installRepoPackages git python python-pip
+	if pacman -Qq hermes-agent >/dev/null 2>&1; then
+		echo "Removing AUR hermes-agent package before installing from source."
+		pacman -Rns --noconfirm hermes-agent || echo "WARNING: Could not remove AUR hermes-agent package; continuing with source install." >&2
 	fi
 
-	if runAsInstallUser sh -lc 'uv tool install --upgrade hermes-agent'; then
-		echo "Hermes Agent installed for $InstallUser."
+	if [ -d "$hermes_dir/.git" ]; then
+		git -C "$hermes_dir" fetch --quiet origin "$hermes_ref" || { echo "WARNING: Hermes git fetch failed; continuing." >&2; return; }
+		git -C "$hermes_dir" checkout -q "$hermes_ref" || { echo "WARNING: Hermes checkout failed; continuing." >&2; return; }
+		git -C "$hermes_dir" pull --ff-only || { echo "WARNING: Hermes git pull failed; continuing." >&2; return; }
 	else
-		echo "WARNING: Hermes Agent install failed; continuing." >&2
+		rm -rf "$hermes_dir"
+		git clone --branch "$hermes_ref" --depth 1 "$hermes_repo" "$hermes_dir" || { echo "WARNING: Hermes git clone failed; continuing." >&2; return; }
+	fi
+
+	if [ ! -f "$hermes_dir/pyproject.toml" ] && [ ! -f "$hermes_dir/setup.py" ]; then
+		echo "WARNING: $hermes_dir is not a Python project; Hermes install skipped." >&2
 		return
 	fi
 
+	python -m venv "$hermes_dir/venv" || { echo "WARNING: Could not create Hermes venv; continuing." >&2; return; }
+	"$hermes_dir/venv/bin/python" -m ensurepip --upgrade || true
+	"$hermes_dir/venv/bin/python" -m pip install --upgrade pip setuptools wheel || { echo "WARNING: Could not upgrade Hermes venv packaging tools; continuing." >&2; return; }
+	"$hermes_dir/venv/bin/python" -m pip install -e "${hermes_dir}[${hermes_extras}]" || { echo "WARNING: Hermes source install failed; continuing." >&2; return; }
+	ln -sf "$hermes_dir/venv/bin/hermes" /usr/local/bin/hermes
+
+	cat > "$hermes_update_script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+Repo="$hermes_dir"
+Ref="$hermes_ref"
+Extras="$hermes_extras"
+Py="\$Repo/venv/bin/python"
+HermesBin="\$Repo/venv/bin/hermes"
+
+if [ ! -d "\$Repo/.git" ]; then
+	echo "Hermes source checkout not found at \$Repo" >&2
+	exit 1
+fi
+
+cd "\$Repo"
+git fetch --quiet origin "\$Ref"
+Local="\$(git rev-parse HEAD)"
+Remote="\$(git rev-parse "origin/\$Ref")"
+
+if [ "\$Local" = "\$Remote" ]; then
+	echo "Hermes Agent already up to date: \$Local"
+	exit 0
+fi
+
+echo "Updating Hermes Agent: \$Local -> \$Remote"
+git checkout -q "\$Ref"
+git pull --ff-only
+
+"\$Py" -m ensurepip --upgrade || true
+"\$Py" -m pip install --upgrade pip setuptools wheel
+"\$Py" -m pip install -e ".[\$Extras]"
+ln -sf "\$HermesBin" /usr/local/bin/hermes
+"\$HermesBin" doctor || true
+EOF
+	chmod 755 "$hermes_update_script"
+
+	cat > "$hermes_update_service" <<EOF
+[Unit]
+Description=Update Hermes Agent from git
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$hermes_update_script
+EOF
+
+	cat > "$hermes_update_timer" <<'EOF'
+[Unit]
+Description=Periodically update Hermes Agent from git
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+Persistent=true
+RandomizedDelaySec=15m
+Unit=hermes-agent-update.service
+
+[Install]
+WantedBy=timers.target
+EOF
+	systemctl daemon-reload
+	systemctl enable --now hermes-agent-update.timer || echo "WARNING: Could not enable Hermes update timer; run: systemctl enable --now hermes-agent-update.timer" >&2
+
+	hermes_bin="$hermes_dir/venv/bin/hermes"
 	if [ -x "$hermes_bin" ]; then
-		runAsInstallUser sh -lc 'export PATH="$HOME/.local/bin:$PATH"; hermes setup --non-interactive || true'
-		runAsInstallUser sh -lc 'export PATH="$HOME/.local/bin:$PATH"; hermes doctor || true'
+		runAsInstallUser sh -lc "export PATH=\"/usr/local/bin:\$HOME/.local/bin:\$PATH\"; hermes setup --non-interactive || true"
+		runAsInstallUser sh -lc "export PATH=\"/usr/local/bin:\$HOME/.local/bin:\$PATH\"; hermes doctor || true"
 		if [ -d "$hermes_vault_dir" ]; then
-			latest_backup="$(ls -t "$hermes_vault_dir"/hermes-*.zip "$hermes_vault_dir"/hermes-*.zip.age 2>/dev/null | head -n 1 || true)"
+			latest_backup="$(find "$hermes_vault_dir" -maxdepth 1 -type f \( -name 'hermes-*.zip' -o -name 'hermes-*.zip.age' \) -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2- || true)"
 			if [ -n "$latest_backup" ]; then
 				read -r -p "Hermes backup found in vault ($(basename "$latest_backup")). Import it now? [y/N]: " restore_answer
 				case "$restore_answer" in
@@ -1128,10 +1276,10 @@ EOF
 							else
 								runAsInstallUser age -d -o "$tmp_restore" "$latest_backup"
 							fi
-							runAsInstallUser sh -lc "export PATH=\"\$HOME/.local/bin:\$PATH\"; hermes import '$tmp_restore' --force"
+							runAsInstallUser sh -lc "export PATH=\"/usr/local/bin:\$HOME/.local/bin:\$PATH\"; hermes import '$tmp_restore' --force"
 							rm -f "$tmp_restore"
 						else
-							runAsInstallUser sh -lc "export PATH=\"\$HOME/.local/bin:\$PATH\"; hermes import '$latest_backup' --force"
+							runAsInstallUser sh -lc "export PATH=\"/usr/local/bin:\$HOME/.local/bin:\$PATH\"; hermes import '$latest_backup' --force"
 						fi
 						;;
 					*) echo "Skipping Hermes restore." ;;
@@ -1139,7 +1287,7 @@ EOF
 			fi
 		fi
 	else
-		echo "WARNING: Hermes executable not found at $hermes_bin after install." >&2
+		echo "WARNING: Hermes executable not found after source install." >&2
 	fi
 }
 
@@ -1249,9 +1397,377 @@ EOF
 	systemctl enable --now "$escaped_timer" || echo "WARNING: Could not enable Hermes backup timer; run: systemctl enable --now $escaped_timer" >&2
 
 	# Make an initial backup if Hermes is already usable; do not fail the install if credentials/setup are incomplete.
-	runAsInstallUser sh -lc 'export PATH="$HOME/.local/bin:$PATH"; "$HOME/.local/bin/hermes-backup" || true'
+	runAsInstallUser sh -lc "export PATH=\"\$HOME/.local/bin:\$PATH\"; \"\$HOME/.local/bin/hermes-backup\" || true"
 }
 
+configureHermesLapisObscuraSkin() {
+	local hermes_skin_dir="$InstallHome/.hermes/skins"
+	local hermes_skin="$hermes_skin_dir/lapis-obscura.yaml"
+
+	echo "Configure Hermes Lapis Obscura skin"
+	mkdir -p "$hermes_skin_dir"
+	cat > "$hermes_skin" <<'EOF'
+name: lapis-obscura
+description: Dark basalt Hermes skin with Gruvbox mineral accents, sacred geometry, dithered old-machine ghostlight, and lo-fi wizard TUI restraint.
+
+colors:
+  banner_border: "#55515d"
+  banner_title: "#d8a657"
+  banner_accent: "#8f7dff"
+  banner_dim: "#918999"
+  banner_text: "#c8c8d0"
+  ui_accent: "#d8a657"
+  ui_label: "#83a598"
+  ui_ok: "#98971a"
+  ui_error: "#cc241d"
+  ui_warn: "#fabd2f"
+  prompt: "#e4e0e8"
+  input_rule: "#55515d"
+  response_border: "#d8a657"
+  session_label: "#d8a657"
+  session_border: "#55515d"
+  status_bar_bg: "#050408"
+  status_bar_text: "#c8c8d0"
+  status_bar_strong: "#d8a657"
+  status_bar_dim: "#918999"
+  status_bar_good: "#98971a"
+  status_bar_warn: "#fabd2f"
+  status_bar_bad: "#d65d0e"
+  status_bar_critical: "#cc241d"
+  voice_status_bg: "#0d0b18"
+  completion_menu_bg: "#090812"
+  completion_menu_current_bg: "#171522"
+  completion_menu_meta_bg: "#0d0b18"
+  completion_menu_meta_current_bg: "#24212c"
+
+spinner:
+  waiting_faces:
+    - "(·)"
+    - "(◇)"
+    - "(△)"
+    - "(○)"
+    - "(⬡)"
+  thinking_faces:
+    - "(☉)"
+    - "(◌)"
+    - "(✦)"
+    - "(⌬)"
+    - "(☾)"
+  thinking_verbs:
+    - "carving sigils"
+    - "reading the stone"
+    - "dithering omens"
+    - "tending the moss"
+    - "aligning ratios"
+    - "opening the gate"
+    - "polishing basalt"
+    - "tracing old circuits"
+    - "summoning a quiet answer"
+  wings:
+    - ["⟪◇", "◇⟫"]
+    - ["⟪△", "△⟫"]
+    - ["⟪⬡", "⬡⟫"]
+    - ["⟪·", "·⟫"]
+
+branding:
+  agent_name: "Hermes Agent"
+  welcome: "Lapis Obscura loaded. Type your message or /help for commands."
+  goodbye: "Gate sealed. ◇"
+  response_label: " ◇ Hermes "
+  prompt_symbol: "◇"
+  help_header: "◇ Available Commands"
+
+tool_prefix: "╎"
+
+tool_emojis:
+  terminal: "△"
+  execute_code: "⌬"
+  read_file: "◇"
+  write_file: "◆"
+  patch: "✦"
+  search_files: "☉"
+  web_search: "◌"
+  vision_analyze: "☾"
+  image_generate: "✶"
+  text_to_speech: "○"
+
+banner_logo: |
+  [bold #d8a657]██╗      █████╗ ██████╗ ██╗███████╗[/]
+  [#fabd2f]██║     ██╔══██╗██╔══██╗██║██╔════╝[/]
+  [#d8a657]██║     ███████║██████╔╝██║███████╗[/]
+  [#918999]██║     ██╔══██║██╔═══╝ ██║╚════██║[/]
+  [#c8c8d0]███████╗██║  ██║██║     ██║███████║[/]
+  [dim #55515d]╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝[/]
+  [#8f7dff]        O B S C U R A[/]
+
+banner_hero: |
+  [#55515d]             ·     .       ·[/]
+  [#918999]        .        ◌        .[/]
+  [#d8a657]              △[/]
+  [#d8a657]             ╱ ╲[/]
+  [#c8c8d0]        ◇───╱___╲───◇[/]
+  [#918999]          ╲  ○ ○  ╱[/]
+  [#55515d]           ╲__·__╱[/]
+  [#24212c]        ░░░▒▒▓ basalt ▓▒▒░░░[/]
+  [#98971a]             moss[/] [#8f7dff]wisp[/] [#83a598]signal[/]
+EOF
+	if [ "$InstallUser" != "root" ]; then
+		chown -R "$InstallUser:$InstallGroup" "$InstallHome/.hermes"
+	fi
+
+	if command -v hermes >/dev/null 2>&1; then
+		runAsInstallUser sh -lc "export PATH=\"/usr/local/bin:\$HOME/.local/bin:\$PATH\"; hermes config set display.skin lapis-obscura || true"
+	else
+		echo "Hermes command not found; Lapis Obscura skin file was written but not activated."
+	fi
+}
+
+configureFootTheme() {
+	local config_dir="$InstallHome/.config/foot"
+	local config="$config_dir/foot.ini"
+	local proggy_font="$InstallHome/proggyfonts/ProggyOriginal/ProggyClean.ttf"
+	local foot_font="ProggyClean"
+	local foot_font_size=16
+	local scanned_font
+
+	echo "Configure Foot Lapis Obscura theme"
+	mkdir -p "$config_dir"
+	if [ -f "$proggy_font" ]; then
+		mkdir -p "$InstallHome/.local/share/fonts/proggyfonts"
+		ln -sf "$proggy_font" "$InstallHome/.local/share/fonts/proggyfonts/ProggyClean.ttf"
+		fc-cache -f "$InstallHome/.local/share/fonts/proggyfonts" || true
+		if command -v fc-scan >/dev/null 2>&1; then
+			scanned_font="$(fc-scan --format '%{family[0]}' "$proggy_font" 2>/dev/null || true)"
+			if [ -n "$scanned_font" ]; then
+				foot_font="$scanned_font"
+			fi
+		fi
+	else
+		echo "ProggyClean.ttf not found at $proggy_font; using Foot font fallback name."
+	fi
+
+	cat > "$config" <<EOF
+# Lapis Obscura foot theme
+# Dark basalt terminal with Gruvbox mineral accents.
+
+[main]
+font=$foot_font:pixelsize=$foot_font_size
+selection-target=both
+pad=8x8
+term=xterm-256color
+
+[scrollback]
+lines=10000
+multiplier=3.0
+
+[cursor]
+style=block
+blink=no
+
+[mouse]
+hide-when-typing=yes
+
+[colors-dark]
+alpha=1.0
+background=050408
+foreground=c8c8d0
+cursor=050408 d8a657
+
+# Normal colors: stone, rust, moss, gold, spirit, portal, ritual, moon
+regular0=090812
+regular1=cc241d
+regular2=98971a
+regular3=d8a657
+regular4=83a598
+regular5=d3869b
+regular6=8ec07c
+regular7=c8c8d0
+
+# Bright colors: ash, ember, lichen, lantern, signal, arcane, aqua, bone
+bright0=55515d
+bright1=fb4934
+bright2=b8bb26
+bright3=fabd2f
+bright4=83a598
+bright5=8f7dff
+bright6=8ec07c
+bright7=e4e0e8
+
+# Stone selection and URL markers
+selection-foreground=e4e0e8
+selection-background=171522
+jump-labels=050408 fabd2f
+urls=83a598
+
+[csd]
+preferred=none
+EOF
+
+	if [ "$InstallUser" != "root" ]; then
+		chown -R "$InstallUser:$InstallGroup" "$config_dir"
+		if [ -d "$InstallHome/.local/share/fonts/proggyfonts" ]; then
+			chown -R "$InstallUser:$InstallGroup" "$InstallHome/.local/share/fonts/proggyfonts"
+		fi
+	fi
+}
+
+configureFishTheme() {
+	local fish_conf_dir="$InstallHome/.config/fish/conf.d"
+	local fish_theme="$fish_conf_dir/20-lapis-obscura.fish"
+
+	echo "Configure Fish Lapis Obscura theme"
+	mkdir -p "$fish_conf_dir"
+	cat > "$fish_theme" <<'EOF'
+# Lapis Obscura fish theme
+# Dark stone, sparse sacred geometry, Gruvbox mineral accents.
+
+set -g fish_greeting ''
+
+# Syntax colors
+set -g fish_color_normal c8c8d0
+set -g fish_color_command d8a657
+set -g fish_color_keyword 8f7dff
+set -g fish_color_quote 98971a
+set -g fish_color_redirection 83a598
+set -g fish_color_end 918999
+set -g fish_color_error cc241d
+set -g fish_color_param c8c8d0
+set -g fish_color_comment 55515d
+set -g fish_color_selection --background=171522
+set -g fish_color_search_match --background=24212c --bold
+set -g fish_color_operator fabd2f
+set -g fish_color_escape 8ec07c
+set -g fish_color_autosuggestion 55515d
+set -g fish_color_cancel cc241d
+
+# Completion pager colors
+set -g fish_pager_color_progress 918999
+set -g fish_pager_color_prefix d8a657 --bold
+set -g fish_pager_color_completion c8c8d0
+set -g fish_pager_color_description 918999
+set -g fish_pager_color_selected_background --background=171522
+set -g fish_pager_color_selected_prefix fabd2f --bold
+set -g fish_pager_color_selected_completion e4e0e8
+set -g fish_pager_color_selected_description 83a598
+
+function fish_prompt --description 'Lapis Obscura prompt'
+    set -l last_status $status
+    set -l cwd (prompt_pwd)
+
+    set_color 55515d
+    printf '◇ '
+    set_color d8a657
+    printf '%s' $USER
+    set_color 55515d
+    printf '@'
+    set_color 83a598
+    printf '%s' (prompt_hostname)
+    set_color 55515d
+    printf ' · '
+    set_color c8c8d0
+    printf '%s' $cwd
+
+    if command git rev-parse --is-inside-work-tree >/dev/null 2>&1
+        set -l branch (command git branch --show-current 2>/dev/null)
+        if test -n "$branch"
+            set_color 55515d
+            printf ' · '
+            set_color 8f7dff
+            printf '⬡ %s' $branch
+        end
+    end
+
+    if test $last_status -ne 0
+        set_color cc241d
+        printf ' △ %s' $last_status
+    end
+
+    set_color normal
+    printf '\n'
+    set_color d8a657
+    printf '◆ '
+    set_color normal
+end
+
+function fish_right_prompt --description 'Lapis Obscura right prompt'
+    set_color 55515d
+    printf '☾ '
+    set_color 918999
+    date '+%H:%M'
+    set_color normal
+end
+
+# Minimal convenience abbreviations. Keep this small: stone first, no shell bloat.
+abbr -a -- ll 'ls -lh --group-directories-first'
+abbr -a -- la 'ls -lah --group-directories-first'
+abbr -a -- gs 'git status --short --branch'
+abbr -a -- v nvim
+EOF
+
+	if [ "$InstallUser" != "root" ]; then
+		chown -R "$InstallUser:$InstallGroup" "$InstallHome/.config/fish"
+	fi
+}
+
+configureFuzzelTheme() {
+	local config_dir="$InstallHome/.config/fuzzel"
+	local config="$config_dir/fuzzel.ini"
+
+	echo "Configure Fuzzel theme"
+	mkdir -p "$config_dir"
+	cat > "$config" <<'EOF'
+# Lapis Obscura fuzzel theme
+# Command portal, not app-store card: sharp stone, small footprint, sparse sigils.
+
+[main]
+font=ProggyCleanTT:pixelsize=16
+terminal=foot -e
+prompt="◇ "
+placeholder="summon command"
+icons-enabled=no
+use-bold=no
+dpi-aware=no
+width=55
+lines=13
+horizontal-pad=13
+vertical-pad=8
+inner-pad=5
+tabs=4
+layer=overlay
+match-mode=fzf
+filter-desktop=yes
+
+[colors]
+background=050408ee
+text=c8c8d0ff
+prompt=d8a657ff
+placeholder=55515dcc
+input=e4e0e8ff
+match=d8a657ff
+selection=171522ff
+selection-text=e4e0e8ff
+selection-match=fabd2fff
+counter=918999cc
+border=55515dcc
+
+[border]
+width=1
+radius=0
+selection-radius=0
+EOF
+
+	if [ "$InstallUser" != "root" ]; then
+		chown -R "$InstallUser:$InstallGroup" "$config_dir"
+	fi
+
+	if command -v fuzzel >/dev/null 2>&1; then
+		if ! runAsInstallUser fuzzel --check-config --config "$config"; then
+			echo "WARNING: fuzzel config validation failed for $config" >&2
+		fi
+	fi
+}
+
+# shellcheck disable=SC2016
 configureHyprlandConfig() {
 	local config="$InstallHome/.config/hypr/hyprland.conf"
 
@@ -1262,26 +1778,33 @@ configureHyprlandConfig() {
 	fi
 
 	sed -i -E 's/^([[:space:]]*)autogenerated[[:space:]]*=/\1# autogenerated =/' "$config"
+	# Lapis Obscura: sharp basalt slabs, Fibonacci gaps, 1px ritual border,
+	# no compositor-costly blur/shadow/glass. Active border is the only flourish.
 	sed -i -E '/^[[:space:]]*general[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*gaps_in[[:space:]]*=.*/    gaps_in = 2/' "$config"
 	sed -i -E '/^[[:space:]]*general[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*gaps_out[[:space:]]*=.*/    gaps_out = 5/' "$config"
 	sed -i -E '/^[[:space:]]*general[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*border_size[[:space:]]*=.*/    border_size = 1/' "$config"
-	setHyprBlockOption general col.active_border 'rgba(c8c8d0ff) rgba(0b0612ff) rgba(e6e6ecff) rgba(170026ff) rgba(c8c8d0ff) 45deg' "$config"
-	setHyprBlockOption general col.inactive_border 'rgba(55515dcc) rgba(0b0612cc) rgba(2a2633cc) 45deg' "$config"
+	setHyprBlockOption general col.active_border 'rgba(d8a657ff) rgba(c8c8d0ff) rgba(8f7dffff) 45deg' "$config"
+	setHyprBlockOption general col.inactive_border 'rgba(55515dcc) rgba(0d0b18cc) rgba(24212ccc) 45deg' "$config"
 	sed -i -E '/^[[:space:]]*decoration[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*rounding[[:space:]]*=.*/    rounding = 0/' "$config"
-	sed -i -E '/^[[:space:]]*decoration[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*rounding_power[[:space:]]*=.*/    rounding_power = 0/' "$config"
+	sed -i -E '/^[[:space:]]*decoration[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*rounding_power[[:space:]]*=.*/    rounding_power = 2/' "$config"
+	setHyprBlockOption decoration active_opacity 1.0 "$config"
+	setHyprBlockOption decoration inactive_opacity 1.0 "$config"
 	sed -i -E '/^[[:space:]]*shadow[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*enabled[[:space:]]*=.*/        enabled = false/' "$config"
 	sed -i -E '/^[[:space:]]*blur[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*enabled[[:space:]]*=.*/        enabled = false/' "$config"
-	sed -i -E '/^[[:space:]]*animations[[:space:]]*\{/,/^[[:space:]]*\}/ s/^[[:space:]]*enabled[[:space:]]*=.*/    enabled = false/' "$config"
+	setHyprBlockOption animations enabled false "$config"
 	setHyprBlockOption misc disable_hyprland_logo true "$config"
 	setHyprBlockOption misc disable_splash_rendering true "$config"
 	setHyprBlockOption misc force_default_wallpaper 0 "$config"
+	# Remove render options that are absent from the current Arch Hyprland release
+	# or unstable across adjacent Hyprland versions. Keep the known-safe color
+	# management options used by Hyprland 0.54.x: cm_enabled, cm_auto_hdr,
+	# send_content_type, and non_shader_cm.
+	sed -i -E '/^[[:space:]]*render[[:space:]]*\{/,/^[[:space:]]*\}/ {/^[[:space:]]*(cm_fs_passthrough|use_fp16|keep_unmodified_copy|non_shader_cm_interop)[[:space:]]*=/d;}' "$config"
 	setHyprBlockOption render cm_enabled true "$config"
-	setHyprBlockOption render cm_fs_passthrough 2 "$config"
 	setHyprBlockOption render cm_auto_hdr 1 "$config"
 	setHyprBlockOption render send_content_type true "$config"
-	setHyprBlockOption render use_fp16 2 "$config"
-	setHyprBlockOption render keep_unmodified_copy 2 "$config"
-	configureSamsungOledG8Monitor "$config"
+	setHyprBlockOption render non_shader_cm 2 "$config"
+	configureManualMonitorLayout "$config"
 
 	if grep -qE '^\s*\$terminal\s*=' "$config"; then
 		sed -i -E 's|^\s*\$terminal\s*=.*|$terminal = foot|' "$config"
@@ -1329,6 +1852,10 @@ configureHyprlandConfig() {
 	ensureHyprLine "exec-once = sh -c 'command -v monique >/dev/null 2>&1 && monique'" "$config"
 
 	ensureHyprLine 'bind = $mainMod SHIFT, V, exec, cliphist list | fuzzel --dmenu | cliphist decode | wl-copy' "$config"
+	# Super+Q should open a terminal. Remove Hyprland's default Super+Q killactive binding first.
+	sed -i -E '/^[[:space:]]*bind[[:space:]]*=[[:space:]]*\$mainMod,[[:space:]]*Q,[[:space:]]*killactive[[:space:]]*$/d' "$config"
+	ensureHyprLine 'bind = $mainMod, Q, exec, $terminal' "$config"
+	ensureHyprLine 'bind = $mainMod, RETURN, exec, $terminal' "$config"
 	ensureHyprLine 'bind = $mainMod, M, exec, command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch exit' "$config"
 	ensureHyprLine 'bind = $mainMod, E, exec, $fileManager' "$config"
 	ensureHyprLine 'bind = $mainMod, R, exec, $menu' "$config"
@@ -1346,7 +1873,6 @@ configureHyprlandConfig() {
 	done
 
 	# Window management
-	ensureHyprLine 'bind = $mainMod, Q, killactive' "$config"
 	ensureHyprLine 'bind = $mainMod, F, fullscreen, 0' "$config"
 	ensureHyprLine 'bind = $mainMod SHIFT, F, togglefloating' "$config"
 	ensureHyprLine 'bind = $mainMod, left, movefocus, l' "$config"
@@ -1491,7 +2017,7 @@ installRepoPackages \
 	hyprlock hypridle grim slurp
 installAurPackages hyprpwcenter hyprshutdown eww monique
 echo "Start Hyprland once to generate configs"
-if [ -n "$WAYLAND_DISPLAY" ] || [ -n "$DISPLAY" ]; then
+if [ -n "${WAYLAND_DISPLAY:-}" ] || [ -n "${DISPLAY:-}" ]; then
 	echo "Skipping Hyprland first-run because a graphical session is already active."
 elif [ "$InstallUser" = "root" ]; then
 	echo "Skipping Hyprland first-run because no non-root install user was detected."
@@ -1517,6 +2043,7 @@ else
 fi
 configureHyprlandConfig
 configureHyprpaperConfig
+configureFuzzelTheme
 configureEwwConfig
 configureHypridleConfig
 configureHyprlockConfig
@@ -1531,8 +2058,9 @@ installAurPackages vesktop zen-browser-bin visual-studio-code-bin jetbrains-tool
 
 configureGithubVault
 configureHermesAgent
+configureHermesLapisObscuraSkin
 configureHermesBackup
-runAsInstallUser sh -lc 'export PATH="$HOME/.local/bin:$PATH"; if [ -x "$HOME/.local/bin/vault-backup" ]; then "$HOME/.local/bin/vault-backup" || true; fi'
+runAsInstallUser sh -lc "export PATH=\"\$HOME/.local/bin:\$PATH\"; if [ -x \"\$HOME/.local/bin/vault-backup\" ]; then \"\$HOME/.local/bin/vault-backup\" || true; fi"
 
 echo -e "${Title}Configuring Arch${END}"
 echo "Enable SSD TRIM"
@@ -1600,46 +2128,8 @@ if [ -n "$InstallUser" ] && [ "$InstallUser" != "root" ]; then
 else
 	echo "Skipping shell change because no non-root install user was detected."
 fi
-echo "Configure Foot font"
-ProggyFont="$InstallHome/proggyfonts/ProggyOriginal/ProggyClean.ttf"
-FootConfig="$InstallHome/.config/foot/foot.ini"
-FootFont="ProggyClean"
-FootFontSize=16
-if [ -f "$ProggyFont" ]; then
-	mkdir -p "$InstallHome/.local/share/fonts/proggyfonts" "$InstallHome/.config/foot"
-	ln -sf "$ProggyFont" "$InstallHome/.local/share/fonts/proggyfonts/ProggyClean.ttf"
-	fc-cache -f "$InstallHome/.local/share/fonts/proggyfonts"
-	if command -v fc-scan >/dev/null 2>&1; then
-		ScannedFootFont="$(fc-scan --format '%{family[0]}' "$ProggyFont" 2>/dev/null)"
-		if [ -n "$ScannedFootFont" ]; then
-			FootFont="$ScannedFootFont"
-		fi
-	fi
-	if [ -f "$FootConfig" ]; then
-		if grep -qE '^\s*font=' "$FootConfig"; then
-			sed -i "s|^\s*font=.*|font=$FootFont:pixelsize=$FootFontSize|" "$FootConfig"
-		elif grep -qE '^\s*\[main\]' "$FootConfig"; then
-			sed -i "/^\s*\[main\]/a font=$FootFont:pixelsize=$FootFontSize" "$FootConfig"
-		else
-			printf "\n[main]\nfont=%s:pixelsize=%s\n" "$FootFont" "$FootFontSize" >> "$FootConfig"
-		fi
-	else
-		printf "[main]\nfont=%s:pixelsize=%s\n" "$FootFont" "$FootFontSize" > "$FootConfig"
-	fi
-	# Foot defaults selected text to the PRIMARY selection only. That works
-	# terminal-to-terminal, but Chromium/Helium Ctrl+V reads CLIPBOARD.
-	# Copy selections to both so terminal -> browser paste works normally.
-	if grep -qE '^\s*selection-target=' "$FootConfig"; then
-		sed -i 's|^\s*selection-target=.*|selection-target=both|' "$FootConfig"
-	else
-		printf "selection-target=both\n" >> "$FootConfig"
-	fi
-	if [ "$InstallUser" != "root" ]; then
-		chown -R "$InstallUser:$InstallGroup" "$InstallHome/.config/foot" "$InstallHome/.local/share/fonts/proggyfonts"
-	fi
-else
-	echo "ProggyClean.ttf not found at $ProggyFont; skipping Foot font configuration."
-fi
+configureFootTheme
+configureFishTheme
 copySshKeysFromUsb
 
 if [ "${ZERTH_NO_REBOOT:-0}" = "1" ]; then

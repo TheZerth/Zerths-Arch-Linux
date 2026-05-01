@@ -1,0 +1,103 @@
+name: lapis-obscura
+description: Dark basalt Hermes skin with Gruvbox mineral accents, sacred geometry, dithered old-machine ghostlight, and lo-fi wizard TUI restraint.
+
+colors:
+  banner_border: "#55515d"
+  banner_title: "#d8a657"
+  banner_accent: "#8f7dff"
+  banner_dim: "#918999"
+  banner_text: "#c8c8d0"
+  ui_accent: "#d8a657"
+  ui_label: "#83a598"
+  ui_ok: "#98971a"
+  ui_error: "#cc241d"
+  ui_warn: "#fabd2f"
+  prompt: "#e4e0e8"
+  input_rule: "#55515d"
+  response_border: "#d8a657"
+  session_label: "#d8a657"
+  session_border: "#55515d"
+  status_bar_bg: "#050408"
+  status_bar_text: "#c8c8d0"
+  status_bar_strong: "#d8a657"
+  status_bar_dim: "#918999"
+  status_bar_good: "#98971a"
+  status_bar_warn: "#fabd2f"
+  status_bar_bad: "#d65d0e"
+  status_bar_critical: "#cc241d"
+  voice_status_bg: "#0d0b18"
+  completion_menu_bg: "#090812"
+  completion_menu_current_bg: "#171522"
+  completion_menu_meta_bg: "#0d0b18"
+  completion_menu_meta_current_bg: "#24212c"
+
+spinner:
+  waiting_faces:
+    - "(·)"
+    - "(◇)"
+    - "(△)"
+    - "(○)"
+    - "(⬡)"
+  thinking_faces:
+    - "(☉)"
+    - "(◌)"
+    - "(✦)"
+    - "(⌬)"
+    - "(☾)"
+  thinking_verbs:
+    - "carving sigils"
+    - "reading the stone"
+    - "dithering omens"
+    - "tending the moss"
+    - "aligning ratios"
+    - "opening the gate"
+    - "polishing basalt"
+    - "tracing old circuits"
+    - "summoning a quiet answer"
+  wings:
+    - ["⟪◇", "◇⟫"]
+    - ["⟪△", "△⟫"]
+    - ["⟪⬡", "⬡⟫"]
+    - ["⟪·", "·⟫"]
+
+branding:
+  agent_name: "Hermes Agent"
+  welcome: "Lapis Obscura loaded. Type your message or /help for commands."
+  goodbye: "Gate sealed. ◇"
+  response_label: " ◇ Hermes "
+  prompt_symbol: "◇"
+  help_header: "◇ Available Commands"
+
+tool_prefix: "╎"
+
+tool_emojis:
+  terminal: "△"
+  execute_code: "⌬"
+  read_file: "◇"
+  write_file: "◆"
+  patch: "✦"
+  search_files: "☉"
+  web_search: "◌"
+  vision_analyze: "☾"
+  image_generate: "✶"
+  text_to_speech: "○"
+
+banner_logo: |
+  [bold #d8a657]██╗      █████╗ ██████╗ ██╗███████╗[/]
+  [#fabd2f]██║     ██╔══██╗██╔══██╗██║██╔════╝[/]
+  [#d8a657]██║     ███████║██████╔╝██║███████╗[/]
+  [#918999]██║     ██╔══██║██╔═══╝ ██║╚════██║[/]
+  [#c8c8d0]███████╗██║  ██║██║     ██║███████║[/]
+  [dim #55515d]╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝[/]
+  [#8f7dff]        O B S C U R A[/]
+
+banner_hero: |
+  [#55515d]             ·     .       ·[/]
+  [#918999]        .        ◌        .[/]
+  [#d8a657]              △[/]
+  [#d8a657]             ╱ ╲[/]
+  [#c8c8d0]        ◇───╱___╲───◇[/]
+  [#918999]          ╲  ○ ○  ╱[/]
+  [#55515d]           ╲__·__╱[/]
+  [#24212c]        ░░░▒▒▓ basalt ▓▒▒░░░[/]
+  [#98971a]             moss[/] [#8f7dff]wisp[/] [#83a598]signal[/]
