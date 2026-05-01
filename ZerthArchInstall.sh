@@ -44,15 +44,15 @@ ensureParuWorks() {
 			echo "ERROR: Cannot build paru as root. Run this script through sudo from the target user." >&2
 			exit 1
 		fi
-		local ParuBuildDir="$InstallHome/.cache/paru-bin-build"
-		rm -rf "$ParuBuildDir"
+		local paruBuildDir="$InstallHome/.cache/paru-bin-build"
+		rm -rf "$paruBuildDir"
 		mkdir -p "$InstallHome/.cache"
 		chown "$InstallUser:$InstallGroup" "$InstallHome/.cache"
-		runAsInstallUser git clone "https://aur.archlinux.org/paru-bin.git" "$ParuBuildDir"
+		runAsInstallUser git clone "https://aur.archlinux.org/paru-bin.git" "$paruBuildDir"
 		runAsInstallUser sh -lc 'cd "$HOME/.cache/paru-bin-build" && makepkg --noconfirm'
-		local ParuPackages=("$ParuBuildDir"/*.pkg.tar.zst)
-		pacman -U --noconfirm "${ParuPackages[@]}" || { echo "ERROR: Failed to install paru package. Aborting." >&2; exit 1; }
-		rm -rf "$ParuBuildDir"
+		local paruPackages=("$paruBuildDir"/*.pkg.tar.zst)
+		pacman -U --noconfirm "${paruPackages[@]}" || { echo "ERROR: Failed to install paru package. Aborting." >&2; exit 1; }
+		rm -rf "$paruBuildDir"
 	else
 		echo -e "Paru ${Success}installed${END}."
 	fi
