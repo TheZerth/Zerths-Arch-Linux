@@ -37,22 +37,26 @@ runAsInstallUser() {
 	fi
 }
 
+buildAndInstallParu() {
+	if [ "$InstallUser" = "root" ]; then
+		echo "ERROR: Cannot build paru as root. Run this script through sudo from the target user." >&2
+		exit 1
+	fi
+	local paruBuildDir="$InstallHome/.cache/paru-build"
+	rm -rf "$paruBuildDir"
+	mkdir -p "$InstallHome/.cache"
+	chown "$InstallUser:$InstallGroup" "$InstallHome/.cache"
+	runAsInstallUser git clone "https://aur.archlinux.org/paru.git" "$paruBuildDir"
+	runAsInstallUser sh -lc 'cd "'"$paruBuildDir"'" && makepkg -s --noconfirm'
+	local paruPackages=("$paruBuildDir"/*.pkg.tar.zst)
+	pacman -U --noconfirm "${paruPackages[@]}" || { echo "ERROR: Failed to install paru package. Aborting." >&2; exit 1; }
+	rm -rf "$paruBuildDir"
+}
+
 ensureParuWorks() {
 	if [ ! -x /usr/bin/paru ]; then
 		echo -e "Paru ${Fail}not${END} found, ${Install}installing${END}."
-		if [ "$InstallUser" = "root" ]; then
-			echo "ERROR: Cannot build paru as root. Run this script through sudo from the target user." >&2
-			exit 1
-		fi
-		local paruBuildDir="$InstallHome/.cache/paru-bin-build"
-		rm -rf "$paruBuildDir"
-		mkdir -p "$InstallHome/.cache"
-		chown "$InstallUser:$InstallGroup" "$InstallHome/.cache"
-		runAsInstallUser git clone "https://aur.archlinux.org/paru-bin.git" "$paruBuildDir"
-		runAsInstallUser sh -lc 'cd "$HOME/.cache/paru-bin-build" && makepkg --noconfirm'
-		local paruPackages=("$paruBuildDir"/*.pkg.tar.zst)
-		pacman -U --noconfirm "${paruPackages[@]}" || { echo "ERROR: Failed to install paru package. Aborting." >&2; exit 1; }
-		rm -rf "$paruBuildDir"
+		buildAndInstallParu
 	else
 		echo -e "Paru ${Success}installed${END}."
 	fi
@@ -1414,6 +1418,10 @@ echo "Installing reflector and updating mirrorlist for Canada."
 pacman -S --needed --noconfirm reflector
 reflector --country Canada --latest 10 --sort rate --save /etc/pacman.d/mirrorlist
 pacman -Syu --noconfirm
+if [ -x /usr/bin/paru ]; then
+	echo -e "${Title}Rebuilding paru from source against updated libalpm.${END}"
+	buildAndInstallParu
+fi
 echo "Adding development packages."
 pacman -S --needed --noconfirm base-devel
 echo "Acquiring Git"
