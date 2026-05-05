@@ -366,12 +366,11 @@ configureManualMonitorLayout() {
 
 configureHyprpaperConfig() {
 	local config="$InstallHome/.config/hypr/hyprpaper.conf"
-	local wallpaper_dir="$InstallHome/Pictures/Wallpapers/LapisObscura"
-	local repo_wallpaper_dir="$ScriptDir/wallpapers/lapis-obscura"
-	local generator="$ScriptDir/wallpapers/scripts/generate_lapis_obscura_wallpapers.py"
-	local default_wallpaper="$wallpaper_dir/lapis-obscura-terminal-temple-3440x1440.png"
+	local wallpaper_dir="$InstallHome/Pictures/Wallpapers/AncientMegaliths"
+	local repo_wallpaper_dir="$ScriptDir/wallpapers/ancient-megaliths"
+	local default_wallpaper="$wallpaper_dir/lapis-obscura-ancient-megalith-world-01.png"
 	local ultrawide_wallpaper="${ZERTH_HYPRPAPER_ULTRAWIDE_WALLPAPER:-$default_wallpaper}"
-	local portrait_wallpaper="${ZERTH_HYPRPAPER_PORTRAIT_WALLPAPER:-$wallpaper_dir/lapis-obscura-terminal-temple-1440x2560.png}"
+	local portrait_wallpaper="${ZERTH_HYPRPAPER_PORTRAIT_WALLPAPER:-$wallpaper_dir/lapis-obscura-ancient-megalith-temple-01.png}"
 	local wallpaper="${ZERTH_HYPRPAPER_WALLPAPER:-$default_wallpaper}"
 	local ultrawide_output="${ZERTH_HYPRPAPER_ULTRAWIDE_OUTPUT:-${ZERTH_HYPR_PRIMARY_OUTPUT:-DP-3}}"
 	local portrait_output="${ZERTH_HYPRPAPER_PORTRAIT_OUTPUT:-${ZERTH_HYPR_PORTRAIT_OUTPUT:-DP-2}}"
@@ -383,15 +382,8 @@ configureHyprpaperConfig() {
 
 	if [ -d "$repo_wallpaper_dir" ]; then
 		cp -f "$repo_wallpaper_dir"/* "$wallpaper_dir"/ 2>/dev/null || true
-	elif [ -x "$generator" ] && command -v python >/dev/null 2>&1; then
-		if python - <<'PY' >/dev/null 2>&1
-import PIL
-PY
-		then
-			python "$generator" --out "$wallpaper_dir"
-		else
-			echo "python-pillow is not installed; skipping generated wallpaper creation."
-		fi
+	else
+		echo "No Ancient Megalith wallpapers found in $repo_wallpaper_dir; Hyprpaper will reference $wallpaper."
 	fi
 
 	shopt -s nullglob
@@ -399,35 +391,47 @@ PY
 	shopt -u nullglob
 
 	if [ "${#wallpapers[@]}" -eq 0 ]; then
-		echo "No Lapis Obscura wallpapers found; Hyprpaper will reference $wallpaper."
+		echo "No Ancient Megalith wallpapers found; Hyprpaper will reference $wallpaper."
 	fi
 
 	{
-		printf '# Zerth Lapis Obscura wallpaper section\n'
-		printf '# Source assets: %s/wallpapers/lapis-obscura\n' "$ScriptDir"
+		printf '# Zerth Ancient Megaliths wallpaper section\n'
+		printf '# Source assets: %s/wallpapers/ancient-megaliths\n' "$ScriptDir"
 		printf '# Saved locally: %s\n' "$wallpaper_dir"
+		printf '# Fit mode: cover = crop to fill the screen\n'
 		printf '# Override default wallpaper before running with:\n'
 		printf '# ZERTH_HYPRPAPER_WALLPAPER=/path/to/wallpaper.png\n'
 		printf '# Optional dual-monitor outputs default to DP-3 ultrawide and DP-2 portrait:\n'
 		printf '# ZERTH_HYPRPAPER_ULTRAWIDE_OUTPUT=DP-3\n'
 		printf '# ZERTH_HYPRPAPER_PORTRAIT_OUTPUT=DP-2\n'
+		printf 'splash = false\n'
+		printf 'ipc = true\n\n'
 		for wp in "${wallpapers[@]}"; do
 			printf 'preload = %s\n' "$wp"
 		done
 		if [ "${#wallpapers[@]}" -eq 0 ]; then
 			printf 'preload = %s\n' "$wallpaper"
 		fi
-		if [ -n "$ultrawide_output" ] || [ -n "$portrait_output" ]; then
-			if [ -n "$ultrawide_output" ]; then
-				printf 'wallpaper = %s,%s\n' "$ultrawide_output" "$ultrawide_wallpaper"
-			fi
-			if [ -n "$portrait_output" ]; then
-				printf 'wallpaper = %s,%s\n' "$portrait_output" "$portrait_wallpaper"
-			fi
-		else
-			printf 'wallpaper = ,%s\n' "$wallpaper"
+		printf '\n'
+		if [ -n "$ultrawide_output" ]; then
+			printf 'wallpaper {\n'
+			printf '    monitor = %s\n' "$ultrawide_output"
+			printf '    path = %s\n' "$ultrawide_wallpaper"
+			printf '    fit_mode = cover\n'
+			printf '}\n\n'
 		fi
-		printf 'splash = false\n'
+		if [ -n "$portrait_output" ]; then
+			printf 'wallpaper {\n'
+			printf '    monitor = %s\n' "$portrait_output"
+			printf '    path = %s\n' "$portrait_wallpaper"
+			printf '    fit_mode = cover\n'
+			printf '}\n\n'
+		fi
+		printf 'wallpaper {\n'
+		printf '    monitor = \n'
+		printf '    path = %s\n' "$wallpaper"
+		printf '    fit_mode = cover\n'
+		printf '}\n'
 	} > "$config"
 
 	if [ "$InstallUser" != "root" ]; then

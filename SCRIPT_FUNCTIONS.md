@@ -65,7 +65,7 @@ Finds a named block (e.g. `general { … }`) in a Hyprland config file and eithe
 Removes any previous auto-generated `monitor =` default and any prior `# Zerth Samsung OLED G8 monitor` block, then appends a `monitorv2 { … }` block tailored for the Samsung OLED G8 (3440×1440 @ 120 Hz, 10-bit, HDR, VRR enabled). The output connector can be pinned via the `ZERTH_HYPR_MONITOR_OUTPUT` environment variable.
 
 ### `configureHyprpaperConfig`
-Creates `~/.config/hypr/hyprpaper.conf` if it does not exist, or idempotently updates the `preload`, `wallpaper`, and `splash` entries if it does. The wallpaper path defaults to `~/Pictures/wallpaper.png` and can be overridden with `ZERTH_HYPRPAPER_WALLPAPER`.
+Copies tracked wallpapers from `wallpapers/ancient-megaliths/` into `~/Pictures/Wallpapers/AncientMegaliths/` and rewrites `~/.config/hypr/hyprpaper.conf` with hyprpaper `wallpaper { ... }` blocks. The defaults target `DP-3` with `lapis-obscura-ancient-megalith-world-01.png`, `DP-2` with `lapis-obscura-ancient-megalith-temple-01.png`, preload all tracked wallpapers, and set `fit_mode = cover` so images crop/fill the display. The fallback path can still be overridden with `ZERTH_HYPRPAPER_WALLPAPER`.
 
 ### `configureEwwConfig`
 Writes three files into `~/.config/eww/`:

@@ -5,7 +5,8 @@ This directory contains wallpaper assets for the Zerth Arch / Hyprland setup.
 ## Directories
 
 - `references/` — optional local inspiration/reference downloads; ignored by git.
-- `lapis-obscura/` — custom generated wallpapers for the Lapis Obscura theme, tracked because the installer deploys them.
+- `ancient-megaliths/` — tracked imported megalith/temple wallpaper set used by the installer for the default live wallpaper deployment.
+- `lapis-obscura/` — custom generated wallpapers for the Lapis Obscura theme, kept in-repo as additional themed assets.
 - `scripts/generate_lapis_obscura_wallpapers.py` — procedural wallpaper generator.
 
 ## Generated sizes
@@ -24,13 +25,19 @@ Each custom wallpaper variant is generated in:
 
 ## Installer behavior
 
-`ZerthArchInstall.sh` copies `wallpapers/lapis-obscura/` into:
+`ZerthArchInstall.sh` copies `wallpapers/ancient-megaliths/` into:
 
 ```text
-~/Pictures/Wallpapers/LapisObscura/
+~/Pictures/Wallpapers/AncientMegaliths/
 ```
 
-Then it writes `~/.config/hypr/hyprpaper.conf` to preload those local images and use the ultrawide `terminal-temple` wallpaper by default.
+Then it writes `~/.config/hypr/hyprpaper.conf` using `wallpaper { ... }` blocks with `fit_mode = cover` so the images crop/fill the screen.
+
+Default assignments:
+
+- `DP-3` → `lapis-obscura-ancient-megalith-world-01.png`
+- `DP-2` → `lapis-obscura-ancient-megalith-temple-01.png`
+- fallback → `lapis-obscura-ancient-megalith-world-01.png`
 
 Optional monitor-specific overrides:
 
@@ -39,7 +46,7 @@ ZERTH_HYPRPAPER_ULTRAWIDE_OUTPUT=DP-3
 ZERTH_HYPRPAPER_PORTRAIT_OUTPUT=DP-2
 ```
 
-By default, the installer assigns the 3440x1440 wallpaper to `DP-3` and the 1440x2560 portrait wallpaper to `DP-2`.
+By default, the installer assigns `lapis-obscura-ancient-megalith-world-01.png` to `DP-3` and `lapis-obscura-ancient-megalith-temple-01.png` to `DP-2`; both are displayed with `fit_mode = cover` so they crop/fill the monitor.
 
 You can also override individual wallpaper paths:
 
